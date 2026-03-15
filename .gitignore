@@ -1,8 +1,4 @@
-# Ignore everything in this repository
 *
-
-# Keep this file tracked
+#Solo file necessari
 !.gitignore
-
-# Keep only the baseline notebook
 !baselin.ipynb
