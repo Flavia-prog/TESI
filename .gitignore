@@ -2,3 +2,4 @@
 #Solo file necessari
 !.gitignore
 !baselin.ipynb
+!setup_env.sh
