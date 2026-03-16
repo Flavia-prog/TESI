@@ -1,0 +1,12 @@
+#REQUIREMENTS
+numpy
+pandas
+matplotlib
+scikit-image
+seaborn
+torch
+torchvision
+medmnist
+aijack
+jupyter
+ipykernel
