@@ -1,4 +1,7 @@
-*
-#Solo file necessari
-!.gitignore
-!baselin.ipynb
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+data/
+results/
+.DS_Store
