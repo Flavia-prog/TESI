@@ -1,0 +1,6 @@
+aijack
+torch
+torchvision
+numpy
+pandas
+matplotlib
