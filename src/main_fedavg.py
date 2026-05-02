@@ -123,6 +123,100 @@ def save_batch_size_vs_single_metric_plot(summary_df, metric_col: str, output_pa
     plt.imsave(output_path, canvas, cmap="gray")
 
 
+def save_dimension_vs_single_metric_plot(summary_df, x_col: str, metric_col: str, output_path: str):
+    width = 900
+    height = 500
+    pad = 60
+    canvas = np.ones((height, width), dtype=np.float32)
+
+    xs = summary_df[x_col].to_numpy(dtype=np.float32)
+    ys = summary_df[metric_col].to_numpy(dtype=np.float32)
+    y_min = float(ys.min())
+    y_max = float(ys.max())
+    y_span = max(y_max - y_min, 1e-6)
+
+    def to_px(x_val, y_val):
+        x_norm = (x_val - xs.min()) / max(xs.max() - xs.min(), 1e-6)
+        y_norm = (y_val - y_min) / y_span
+        px = int(pad + x_norm * (width - 2 * pad))
+        py = int(height - pad - y_norm * (height - 2 * pad))
+        return px, py
+
+    def draw_point(x, y, value=0.2):
+        r = 5
+        y0 = max(0, y - r)
+        y1 = min(height, y + r + 1)
+        x0 = max(0, x - r)
+        x1 = min(width, x + r + 1)
+        canvas[y0:y1, x0:x1] = value
+
+    def draw_line(x0, y0, x1, y1, value=0.2):
+        n = int(max(abs(x1 - x0), abs(y1 - y0))) + 1
+        for t in np.linspace(0.0, 1.0, n):
+            x = int(round(x0 + t * (x1 - x0)))
+            y = int(round(y0 + t * (y1 - y0)))
+            if 0 <= x < width and 0 <= y < height:
+                canvas[y, x] = value
+
+    for x in range(pad, width - pad):
+        canvas[height - pad, x] = 0.85
+    for y in range(pad, height - pad):
+        canvas[y, pad] = 0.85
+
+    points = [to_px(xs[i], ys[i]) for i in range(len(xs))]
+    for i in range(len(points) - 1):
+        draw_line(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])
+    for x, y in points:
+        draw_point(x, y)
+
+    from matplotlib import pyplot as plt
+
+    plt.imsave(output_path, canvas, cmap="gray")
+
+
+def _train_fedavg_for_setting(client_datasets, test_dataset, batch_size: int, num_clients: int):
+    client_loaders, test_loader = make_loaders(client_datasets, test_dataset, batch_size=batch_size)
+
+    global_model = SmallCNN().to(DEVICE)
+    clients = [
+        FedAVGClient(copy.deepcopy(global_model), user_id=i, lr=0.1, device=DEVICE)
+        for i in range(num_clients)
+    ]
+    server = FedAVGServer(clients, copy.deepcopy(global_model), device=DEVICE)
+    criterion = torch.nn.CrossEntropyLoss()
+    local_optimizers = [torch.optim.SGD(client.parameters(), lr=0.1) for client in clients]
+
+    round_acc = []
+    for _ in range(1, 4):
+        api = FedAVGAPI(
+            server=server,
+            clients=clients,
+            criterion=criterion,
+            local_optimizers=local_optimizers,
+            local_dataloaders=client_loaders,
+            num_communication=1,
+            local_epoch=1,
+            use_gradients=True,
+            device=DEVICE,
+        )
+        api.run()
+        round_acc.append(evaluate_accuracy(server.server_model, test_loader, DEVICE))
+
+    return clients, round_acc
+
+
+def _mse_stats_from_attack_metrics(metrics_path: Path):
+    attack_df = pd.read_csv(metrics_path)
+    mse = attack_df["mse"]
+    return {
+        "avg_mse": float(mse.mean()),
+        "median_mse": float(mse.median()),
+        "std_mse": float(mse.std(ddof=0)),
+        "best_mse": float(mse.min()),
+        "worst_mse": float(mse.max()),
+    }
+
+
 def recompute_batch_size_summary_from_existing_results(
     root_dir: str = "results/gradient_inversion", batch_sizes=(1, 4, 8)
 ):
@@ -181,33 +275,16 @@ def run_baseline_and_attack():
 
     for batch_size in batch_sizes:
         print(f"\n=== Running batch size {batch_size} ===")
-        client_loaders, _ = make_loaders(client_datasets, test_dataset, batch_size=batch_size)
-
-        global_model = SmallCNN().to(DEVICE)
-        clients = [
-            FedAVGClient(copy.deepcopy(global_model), user_id=i, lr=0.1, device=DEVICE)
-            for i in range(2)
-        ]
-        server = FedAVGServer(clients, copy.deepcopy(global_model), device=DEVICE)
-        criterion = torch.nn.CrossEntropyLoss()
-        local_optimizers = [torch.optim.SGD(client.parameters(), lr=0.1) for client in clients]
+        clients, round_acc = _train_fedavg_for_setting(
+            client_datasets=client_datasets,
+            test_dataset=test_dataset,
+            batch_size=batch_size,
+            num_clients=2,
+        )
 
         final_acc = 0.0
-        for rnd in range(1, 4):
-            api = FedAVGAPI(
-                server=server,
-                clients=clients,
-                criterion=criterion,
-                local_optimizers=local_optimizers,
-                local_dataloaders=client_loaders,
-                num_communication=1,
-                local_epoch=1,
-                use_gradients=True,
-                device=DEVICE,
-            )
-            api.run()
-
-            final_acc = evaluate_accuracy(server.server_model, test_loader, DEVICE)
+        for rnd, acc in enumerate(round_acc, start=1):
+            final_acc = acc
             print(f"Batch {batch_size} - Round {rnd} test accuracy: {final_acc:.4f}")
             baseline_rows.append(
                 {"batch_size": batch_size, "round": rnd, "test_accuracy": final_acc}
@@ -254,6 +331,78 @@ def run_baseline_and_attack():
     for _, row in summary_df.iterrows():
         print(
             f"batch_size={int(row['batch_size'])} | avg_mse={row['avg_mse']:.6f} | "
+            f"median_mse={row['median_mse']:.6f} | std_mse={row['std_mse']:.6f} | "
+            f"best_mse={row['best_mse']:.6f} | worst_mse={row['worst_mse']:.6f} | "
+            f"final_test_accuracy={row['final_test_accuracy']:.4f}"
+        )
+
+    run_num_clients_attack_experiment()
+
+
+def run_num_clients_attack_experiment():
+    set_seed(0)
+
+    train_dataset, test_dataset = get_mnist("./data")
+    train_subset = get_train_subset(train_dataset, max_samples=2000, seed=0)
+    ensure_dir(str(GRADIENT_INVERSION_DIR))
+
+    num_clients_values = [2, 5]
+    summary_rows = []
+
+    for num_clients in num_clients_values:
+        print(f"\n=== Running num_clients {num_clients} ===")
+        client_datasets = split_iid(train_subset, num_clients=num_clients, seed=0)
+        clients, round_acc = _train_fedavg_for_setting(
+            client_datasets=client_datasets,
+            test_dataset=test_dataset,
+            batch_size=1,
+            num_clients=num_clients,
+        )
+        final_acc = float(round_acc[-1])
+
+        attack_output_dir = GRADIENT_INVERSION_DIR / f"num_clients_{num_clients}"
+        run_gradient_inversion_demo(
+            clients[0],
+            client_datasets[0],
+            output_dir=str(attack_output_dir),
+            num_attacks=10,
+            attack_batch_size=1,
+            attack_iterations=60,
+        )
+
+        stats = _mse_stats_from_attack_metrics(attack_output_dir / "attack_metrics.csv")
+        summary_rows.append(
+            {
+                "num_clients": int(num_clients),
+                "avg_mse": stats["avg_mse"],
+                "median_mse": stats["median_mse"],
+                "std_mse": stats["std_mse"],
+                "best_mse": stats["best_mse"],
+                "worst_mse": stats["worst_mse"],
+                "final_test_accuracy": final_acc,
+            }
+        )
+        print(
+            f"num_clients={num_clients} | avg_mse={stats['avg_mse']:.6f} | "
+            f"median_mse={stats['median_mse']:.6f} | std_mse={stats['std_mse']:.6f} | "
+            f"best_mse={stats['best_mse']:.6f} | worst_mse={stats['worst_mse']:.6f} | "
+            f"final_test_accuracy={final_acc:.4f}"
+        )
+
+    summary_df = pd.DataFrame(summary_rows).sort_values("num_clients").reset_index(drop=True)
+    summary_path = GRADIENT_INVERSION_DIR / "num_clients_summary.csv"
+    summary_df.to_csv(summary_path, index=False)
+    save_dimension_vs_single_metric_plot(
+        summary_df=summary_df,
+        x_col="num_clients",
+        metric_col="median_mse",
+        output_path=GRADIENT_INVERSION_DIR / "num_clients_vs_median_mse.png",
+    )
+
+    print("\n=== Final Num Clients Summary ===")
+    for _, row in summary_df.iterrows():
+        print(
+            f"num_clients={int(row['num_clients'])} | avg_mse={row['avg_mse']:.6f} | "
             f"median_mse={row['median_mse']:.6f} | std_mse={row['std_mse']:.6f} | "
             f"best_mse={row['best_mse']:.6f} | worst_mse={row['worst_mse']:.6f} | "
             f"final_test_accuracy={row['final_test_accuracy']:.4f}"
