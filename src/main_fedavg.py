@@ -7,12 +7,14 @@ import torch
 from aijack.collaborative.fedavg import FedAVGAPI, FedAVGClient, FedAVGServer
 
 from src.attack_gradient_inversion import run_gradient_inversion_demo
+from src.attack_membership_inference import run_membership_inference_attack
 from src.data import get_mnist, get_train_subset, make_loaders, split_iid
 from src.model import SmallCNN
 from src.utils import DEVICE, ensure_dir, evaluate_accuracy, set_seed
 
 RESULTS_DIR = Path("results")
 GRADIENT_INVERSION_DIR = RESULTS_DIR / "gradient_inversion"
+MEMBERSHIP_INFERENCE_DIR = RESULTS_DIR / "membership_inference"
 
 
 def save_batch_size_vs_mse_plot(summary_df, output_path: str):
@@ -202,7 +204,7 @@ def _train_fedavg_for_setting(client_datasets, test_dataset, batch_size: int, nu
         api.run()
         round_acc.append(evaluate_accuracy(server.server_model, test_loader, DEVICE))
 
-    return clients, round_acc
+    return clients, round_acc, copy.deepcopy(server.server_model)
 
 
 def _mse_stats_from_attack_metrics(metrics_path: Path):
@@ -275,7 +277,7 @@ def run_baseline_and_attack():
 
     for batch_size in batch_sizes:
         print(f"\n=== Running batch size {batch_size} ===")
-        clients, round_acc = _train_fedavg_for_setting(
+        clients, round_acc, _ = _train_fedavg_for_setting(
             client_datasets=client_datasets,
             test_dataset=test_dataset,
             batch_size=batch_size,
@@ -337,22 +339,25 @@ def run_baseline_and_attack():
         )
 
     run_num_clients_attack_experiment()
+    run_membership_inference_experiment()
 
 
 def run_num_clients_attack_experiment():
-    set_seed(0)
+    base_seed = 0
 
     train_dataset, test_dataset = get_mnist("./data")
-    train_subset = get_train_subset(train_dataset, max_samples=2000, seed=0)
     ensure_dir(str(GRADIENT_INVERSION_DIR))
 
     num_clients_values = [2, 5]
     summary_rows = []
 
     for num_clients in num_clients_values:
+        exp_seed = base_seed + num_clients
+        set_seed(exp_seed)
         print(f"\n=== Running num_clients {num_clients} ===")
-        client_datasets = split_iid(train_subset, num_clients=num_clients, seed=0)
-        clients, round_acc = _train_fedavg_for_setting(
+        train_subset = get_train_subset(train_dataset, max_samples=2000, seed=exp_seed)
+        client_datasets = split_iid(train_subset, num_clients=num_clients, seed=exp_seed)
+        clients, round_acc, _ = _train_fedavg_for_setting(
             client_datasets=client_datasets,
             test_dataset=test_dataset,
             batch_size=1,
@@ -368,6 +373,7 @@ def run_num_clients_attack_experiment():
             num_attacks=10,
             attack_batch_size=1,
             attack_iterations=60,
+            sample_seed=exp_seed + 10_000,
         )
 
         stats = _mse_stats_from_attack_metrics(attack_output_dir / "attack_metrics.csv")
@@ -407,6 +413,36 @@ def run_num_clients_attack_experiment():
             f"best_mse={row['best_mse']:.6f} | worst_mse={row['worst_mse']:.6f} | "
             f"final_test_accuracy={row['final_test_accuracy']:.4f}"
         )
+
+
+def run_membership_inference_experiment():
+    print("\n=== Running membership inference experiment ===")
+    set_seed(0)
+    ensure_dir(str(MEMBERSHIP_INFERENCE_DIR))
+
+    train_dataset, test_dataset = get_mnist("./data")
+    train_subset = get_train_subset(train_dataset, max_samples=2000, seed=0)
+    client_datasets = split_iid(train_subset, num_clients=2, seed=0)
+
+    _, _, global_model = _train_fedavg_for_setting(
+        client_datasets=client_datasets,
+        test_dataset=test_dataset,
+        batch_size=1,
+        num_clients=2,
+    )
+
+    summary = run_membership_inference_attack(
+        model=global_model,
+        member_dataset=train_subset,
+        non_member_dataset=test_dataset,
+        output_dir=str(MEMBERSHIP_INFERENCE_DIR),
+    )
+
+    print(f"Best threshold: {summary['best_threshold']:.6f}")
+    print(f"Attack accuracy: {summary['attack_accuracy']:.6f}")
+    print(f"Precision: {summary['precision']:.6f}")
+    print(f"Recall: {summary['recall']:.6f}")
+    print(f"F1: {summary['f1']:.6f}")
 
 
 if __name__ == "__main__":

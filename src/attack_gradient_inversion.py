@@ -33,6 +33,7 @@ def run_gradient_inversion_demo(
     num_attacks: int = 10,
     attack_batch_size: int = 1,
     attack_iterations: int = 60,
+    sample_seed: int | None = None,
 ):
     ensure_dir(output_dir)
     out_dir = Path(output_dir)
@@ -51,13 +52,13 @@ def run_gradient_inversion_demo(
     )
     AttackingServer = attack_manager.attach(FedAVGServer)
     criterion = torch.nn.CrossEntropyLoss()
+    rng = np.random.default_rng(sample_seed)
 
     for attack_id in range(num_attacks):
-        base_index = attack_id * attack_batch_size
+        sampled_indices = rng.choice(len(train_dataset), size=attack_batch_size, replace=False)
         batch_x = []
         batch_y = []
-        for j in range(attack_batch_size):
-            idx = (base_index + j) % len(train_dataset)
+        for idx in sampled_indices:
             x_i, y_i = train_dataset[idx]
             batch_x.append(x_i)
             batch_y.append(int(y_i))
@@ -113,7 +114,7 @@ def run_gradient_inversion_demo(
         records.append(
             {
                 "attack_id": attack_id,
-                "sample_index": base_index,
+                "sample_index": int(sampled_indices[0]),
                 "true_label": int(y_secret[0].item()),
                 "predicted_label": pred_label,
                 "mse": mse,
