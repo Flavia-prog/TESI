@@ -12,6 +12,17 @@ from src.model import SmallCNN
 from src.utils import DEVICE, ensure_dir
 
 
+class SignedAdam(torch.optim.Adam):
+    def step(self, closure=None):
+        loss = closure() if closure is not None else None
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is not None:
+                    p.grad.data.copy_(p.grad.data.sign())
+        super().step()
+        return loss
+
+
 def _predict_label(model, image_batch):
     with torch.no_grad():
         logits = model(image_batch.to(DEVICE))
@@ -45,10 +56,10 @@ def run_gradient_inversion_demo(
         x_shape=(1, 28, 28),
         device=DEVICE,
         num_iteration=attack_iterations,
-        lr=1.0,
+        lr=0.1,
         log_interval=30,
-        optimizer_class=torch.optim.LBFGS,
-        distancename="l2",
+        optimizer_class=SignedAdam,
+        distancename="cossim",
     )
     AttackingServer = attack_manager.attach(FedAVGServer)
     criterion = torch.nn.CrossEntropyLoss()
