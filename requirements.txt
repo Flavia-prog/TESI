@@ -1,9 +1,0 @@
-aijack
-torch
-torchvision
-numpy
-pandas
-matplotlib
-scipy
-medmnist
-torchmetrics

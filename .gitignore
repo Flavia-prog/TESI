@@ -1,10 +1,2 @@
-__pycache__/
-*.pyc
-.venv/
-.ipynb_checkpoints/
-data/
-.DS_Store
-*.log
-
-# Keep thesis-curated outputs versionable, ignore scratch outputs.
-results/tmp/
+*
+!.gitignore
