@@ -3,6 +3,8 @@ __pycache__/
 .venv/
 .ipynb_checkpoints/
 data/
-results/
 .DS_Store
-AGENTS.md
+*.log
+
+# Keep thesis-curated outputs versionable, ignore scratch outputs.
+results/tmp/

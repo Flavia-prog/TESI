@@ -1,19 +1,13 @@
-# AIJack FL Privacy Attack (MNIST, CPU-only)
+# FL Privacy Thesis Pipeline
 
-This repository contains a minimal, thesis-ready pipeline for:
-- FedAvg baseline training with AIJack
-- Gradient inversion attack experiments across batch sizes
-- Robust attack summary statistics and plots
+Repository for thesis experiments on privacy-utility tradeoffs in Federated Learning under gradient inversion attacks.
 
-The experiment logic, model, data, and hyperparameters are unchanged.
+## Canonical Entrypoints
 
-## Active source structure
-
-- `src/main_fedavg.py`: orchestrates baseline + batch-size attack experiments + summary plots
-- `src/model.py`: MNIST `SmallCNN`
-- `src/data.py`: MNIST loading, deterministic subset, IID client split, loaders
-- `src/attack_gradient_inversion.py`: AIJack gradient inversion attack routine and per-attack artifacts
-- `src/utils.py`: CPU `DEVICE`, seeding, directory creation, accuracy metric
+- `src/LHS.py`: generate experiment plans (`experiment_plan.csv`)
+- `src/run_thesis_experiments.py`: run image + text pipelines and produce unified tables
+- `src/pipeline_a_bloodmnist.py`: image modality pipeline
+- `src/pipeline_b_text.py`: text modality baseline pipeline
 
 ## Setup
 
@@ -23,32 +17,24 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run
+## Runbook
 
+1. Generate design points:
 ```bash
-python -m src.main_fedavg
+python -m src.LHS
 ```
 
-## Reproduced outputs
+2. Run thesis experiments:
+```bash
+python -m src.run_thesis_experiments
+```
 
-Main outputs:
-- `results/baseline_metrics.csv`
-- `results/gradient_inversion/batch_size_summary.csv`
-- `results/gradient_inversion/batch_size_vs_mse.png`
-- `results/gradient_inversion/batch_size_vs_median_mse.png`
+3. Curate final outputs:
+- Keep thesis-cited files in `results/final/`
+- Temporary or exploratory files go to `results/tmp/`
 
-Per batch-size outputs (`batch_size_1`, `batch_size_4`, `batch_size_8`):
-- `attack_metrics.csv`
-- `reconstruction_grid.png`
-- per-attack original/reconstructed/comparison PNGs
+## Output Convention
 
-## Fixed experiment setup (unchanged)
-
-- Dataset: MNIST (`./data`)
-- Train subset: 2000 samples
-- Clients: 2 (IID split)
-- FedAvg: 3 rounds, 1 local epoch, SGD lr `0.1`
-- Batch-size experiments: `1`, `4`, `8`
-- Attacks per batch size: `10`
-- Gradient inversion iterations: `60`
-- Device: CPU only
+- `results/tradeoff/tradeoff_master.csv`: merged image/text analysis table
+- `results/tradeoff/mlr_coefficients_accuracy.csv`: OLS terms for utility
+- `results/tradeoff/mlr_coefficients_reconstruction.csv`: OLS terms for reconstruction
