@@ -15,3 +15,23 @@ The script will:
   - `baseline_bloodmnist_best.pt`
   - `baseline_bloodmnist_metrics.csv`
   - `baseline_bloodmnist_confusion_matrix.png`
+
+## AIJack FedAvg BloodMNIST Baseline
+
+Run the first federated baseline experiment (FedAvg, no attacks, no defenses):
+
+```bash
+source .venv/bin/activate
+
+CPPFLAGS="-I$(brew --prefix boost)/include" \
+CXXFLAGS="-I$(brew --prefix boost)/include" \
+LDFLAGS="-L$(brew --prefix boost)/lib" \
+python -m pip install -r requirements.txt
+
+python scripts/fedavg_bloodmnist_aijack.py \
+  --num-clients 5 \
+  --num-rounds 20 \
+  --local-epochs 1 \
+  --batch-size 64 \
+  --lr 0.001
+```
