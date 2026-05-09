@@ -1,0 +1,17 @@
+experiment_name: iid_baseline
+
+dataset: bloodmnist
+framework: aijack
+algorithm: fedavg
+
+num_clients: 5
+num_rounds: 20
+local_epochs: 1
+batch_size: 64
+lr: 0.01
+optimizer: SGD
+seed: 42
+
+split_type: iid
+device: cpu
+data_dir: ./data
