@@ -1,1 +1,9 @@
 aijack
+torch
+torchvision
+medmnist
+numpy
+scikit-learn
+matplotlib
+pandas
+tqdm
