@@ -1,0 +1,19 @@
+experiment_name: noniid_alpha_05
+
+dataset: bloodmnist
+framework: aijack
+algorithm: fedavg
+
+num_clients: 5
+num_rounds: 20
+local_epochs: 1
+batch_size: 64
+lr: 0.01
+optimizer: SGD
+seed: 42
+
+split_type: dirichlet
+alpha: 0.5
+
+device: cpu
+data_dir: ./data

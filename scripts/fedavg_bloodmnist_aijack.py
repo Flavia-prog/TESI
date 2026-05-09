@@ -58,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--alpha", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--data-dir", type=str, default=None)
 
@@ -71,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--split-type",
         type=str,
-        choices=["iid"],
+        choices=["iid", "dirichlet"],
         default=None,
     )
 
@@ -98,6 +99,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
         "local_epochs": 1,
         "batch_size": 64,
         "lr": 0.01,
+        "alpha": 0.5,
         "seed": 42,
         "data_dir": "./data",
         "device": "auto",
@@ -112,6 +114,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
         "local_epochs": args.local_epochs,
         "batch_size": args.batch_size,
         "lr": args.lr,
+        "alpha": args.alpha,
         "seed": args.seed,
         "data_dir": args.data_dir,
         "device": args.device,
@@ -214,19 +217,79 @@ def iid_split_indices(n_samples: int, num_clients: int, seed: int) -> list[np.nd
     return np.array_split(indices, num_clients)
 
 
+def dirichlet_split_indices(
+    labels: np.ndarray,
+    num_clients: int,
+    alpha: float,
+    seed: int,
+) -> list[np.ndarray]:
+    if alpha <= 0:
+        raise ValueError("alpha must be > 0 for Dirichlet splitting.")
+
+    rng = np.random.default_rng(seed)
+    client_indices = [[] for _ in range(num_clients)]
+
+    for class_id in range(NUM_CLASSES):
+        class_indices = np.where(labels == class_id)[0]
+        if class_indices.size == 0:
+            continue
+
+        rng.shuffle(class_indices)
+        proportions = rng.dirichlet(np.full(num_clients, alpha, dtype=float))
+        split_points = (np.cumsum(proportions)[:-1] * class_indices.size).astype(int)
+        class_splits = np.split(class_indices, split_points)
+
+        for client_id, split in enumerate(class_splits):
+            if split.size > 0:
+                client_indices[client_id].extend(split.tolist())
+
+    split_indices = []
+    for indices in client_indices:
+        arr = np.array(indices, dtype=int)
+        rng.shuffle(arr)
+        split_indices.append(arr)
+
+    lengths = [len(indices) for indices in split_indices]
+    if any(length == 0 for length in lengths):
+        raise ValueError(
+            "Dirichlet split produced at least one empty client. "
+            "Increase alpha or reduce num_clients."
+        )
+
+    concatenated = np.concatenate(split_indices) if split_indices else np.array([], dtype=int)
+    if concatenated.size != labels.size:
+        raise ValueError("Dirichlet split lost samples. Check split implementation.")
+
+    if np.unique(concatenated).size != labels.size:
+        raise ValueError("Dirichlet split duplicated samples. Check split implementation.")
+
+    return split_indices
+
+
 def create_client_dataloaders(
     train_dataset,
     num_clients: int,
     batch_size: int,
     seed: int,
+    split_type: str,
+    alpha: float,
 ):
-    split_indices = iid_split_indices(
-        n_samples=len(train_dataset),
-        num_clients=num_clients,
-        seed=seed,
-    )
-
     labels = np.array(train_dataset.labels).reshape(-1)
+    if split_type == "iid":
+        split_indices = iid_split_indices(
+            n_samples=len(train_dataset),
+            num_clients=num_clients,
+            seed=seed,
+        )
+    elif split_type == "dirichlet":
+        split_indices = dirichlet_split_indices(
+            labels=labels,
+            num_clients=num_clients,
+            alpha=alpha,
+            seed=seed,
+        )
+    else:
+        raise ValueError(f"Unsupported split_type: {split_type}")
 
     loaders = []
     distribution_rows = []
@@ -399,6 +462,8 @@ def main() -> None:
         num_clients=config["num_clients"],
         batch_size=config["batch_size"],
         seed=config["seed"],
+        split_type=config["split_type"],
+        alpha=config["alpha"],
     )
 
     val_loader = DataLoader(
@@ -498,6 +563,7 @@ def main() -> None:
         f"batch_size={config['batch_size']}, "
         f"lr={config['lr']}, "
         f"split={config['split_type']}, "
+        f"alpha={config['alpha']}, "
         f"optimizer=SGD"
     )
 
@@ -527,6 +593,7 @@ def main() -> None:
         "local_epochs": int(config["local_epochs"]),
         "batch_size": int(config["batch_size"]),
         "lr": float(config["lr"]),
+        "alpha": float(config["alpha"]),
         "optimizer": "SGD",
         "seed": int(config["seed"]),
         "split_type": config["split_type"],
@@ -567,6 +634,7 @@ def main() -> None:
         "local_epochs": config["local_epochs"],
         "batch_size": config["batch_size"],
         "lr": config["lr"],
+        "alpha": config["alpha"],
         "device": str(device),
         "split_type": config["split_type"],
         "optimizer": "SGD",
