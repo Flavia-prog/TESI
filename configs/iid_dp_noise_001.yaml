@@ -1,0 +1,22 @@
+experiment_name: iid_dp_noise_001
+
+dataset: bloodmnist
+framework: aijack/manual_fedavg_dp
+algorithm: fedavg_dp
+
+num_clients: 5
+num_rounds: 20
+local_epochs: 1
+batch_size: 64
+lr: 0.01
+optimizer: SGD
+seed: 42
+
+split_type: iid
+
+device: cpu
+data_dir: ./data
+
+dp_enabled: true
+clip_norm: 1.0
+noise_multiplier: 0.01

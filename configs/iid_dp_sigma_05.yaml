@@ -1,0 +1,25 @@
+experiment_name: iid_dp_sigma_05
+
+dataset: bloodmnist
+framework: aijack
+algorithm: fedavg_dp
+
+num_clients: 5
+num_rounds: 20
+local_epochs: 1
+batch_size: 64
+lr: 0.01
+optimizer: SGD
+seed: 42
+
+split_type: iid
+alpha: 0.5
+
+device: cpu
+data_dir: ./data
+
+dp_enabled: true
+clip_norm: 1.0
+noise_multiplier: 0.5
+dp_noise_std:
+delta: 1.0e-5
