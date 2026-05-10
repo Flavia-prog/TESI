@@ -528,7 +528,12 @@ def main() -> None:
         "attack_status": attack_status,
         "attack_error": attack_error,
         "number_of_reconstructions": num_reconstructions,
-        "reconstruction_mse": reconstruction_mse,
+        "reconstruction_mse": reconstruction_mse,"original_shape": list(original_images_cpu.shape),
+        "reconstructed_shape": (
+            list(reconstructed_tensor.detach().cpu().shape)
+            if reconstructed_tensor is not None
+            else None
+        ),
         "selected_dataset_indices": selected_indices.tolist(),
         "manager_kwargs_used": {
             key: str(value) if isinstance(value, torch.device) else value
