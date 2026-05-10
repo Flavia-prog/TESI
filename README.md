@@ -235,3 +235,38 @@ The attack script:
 5. Runs one communication round with `FedAVGAPI(..., use_gradients=True)` to trigger inversion.
 6. Saves original and reconstructed images.
 7. Saves attack metrics to JSON.
+
+## DP Defense Experiments
+
+DP-style defense experiments are available in:
+
+- `scripts/fedavg_bloodmnist_aijack_dp.py`
+
+This script runs the same BloodMNIST FedAvg pipeline with per-client update:
+
+- L2 clipping
+- Gaussian noise
+
+Implementation detail: it uses AIJack DP components (`DPSGDManager` + `DPSGDClientManager`) together with `FedAVGClient`, `FedAVGServer`, and `FedAVGAPI`.
+
+Run a DP experiment:
+
+```bash
+python scripts/fedavg_bloodmnist_aijack_dp.py --config configs/iid_dp_noise_001.yaml
+```
+
+Run gradient inversion attack on the trained DP model:
+
+```bash
+python scripts/gradient_inversion_bloodmnist_aijack.py \
+  --experiment-dir results/iid_dp_noise_001 \
+  --client-id 0 \
+  --sample-index 0 \
+  --attack-batch-size 1 \
+  --attack-iters 1000 \
+  --num-trials 5 \
+  --attack-lr 0.1 \
+  --distance cossim \
+  --device cpu \
+  --output-dir results/iid_dp_noise_001/attacks/batch1_cossim_1000iters_5trials_lr01_client0_sample0
+```
