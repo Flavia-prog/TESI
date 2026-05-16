@@ -1,4 +1,5 @@
 import argparse
+import concurrent.futures
 import json
 import re
 import subprocess
@@ -76,6 +77,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional cap for debugging/pilot runs.",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Number of attacks to run in parallel. Use 1 for sequential execution.",
     )
     parser.add_argument(
         "--device",
@@ -227,6 +234,8 @@ def run_attack(
     distance: str,
     device: str,
 ) -> tuple[bool, str, str, int]:
+    run_dir.mkdir(parents=True, exist_ok=True)
+
     cmd = [
         python_exe,
         str(script_path),
@@ -258,8 +267,6 @@ def run_attack(
         text=True,
         check=False,
     )
-
-    run_dir.mkdir(parents=True, exist_ok=True)
 
     with (run_dir / "attack_stdout.txt").open("w", encoding="utf-8") as f:
         f.write(result.stdout or "")
@@ -514,6 +521,8 @@ def save_group_summaries(aggregated: pd.DataFrame, analysis_dir: Path) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.jobs < 1:
+        raise ValueError("--jobs must be >= 1.")
 
     script_path = Path(__file__).resolve().parent / "gradient_inversion_bloodmnist_aijack.py"
     if not script_path.exists():
@@ -573,13 +582,10 @@ def main() -> None:
     current_run_dirs = [combo["run_dir"] for combo in combos]
 
     if not args.analysis_only:
-        iterator = tqdm(combos, desc=f"Running attacks [{sweep_name}]")
-
-        for idx, combo in enumerate(iterator, start=1):
-            experiment_dir = combo["experiment_dir"]
+        combos_to_run = []
+        for combo in combos:
             run_dir = combo["run_dir"]
             metrics_path = run_dir / "attack_metrics.json"
-
             if metrics_path.exists() and not args.rerun_existing:
                 run_records.append(
                     {
@@ -590,14 +596,14 @@ def main() -> None:
                     }
                 )
                 continue
+            combos_to_run.append(combo)
 
-            run_dir.mkdir(parents=True, exist_ok=True)
-
+        def execute_combo(combo: dict[str, Any]) -> dict[str, Any]:
             ok, stdout, stderr, returncode = run_attack(
                 python_exe=sys.executable,
                 script_path=script_path,
-                experiment_dir=experiment_dir,
-                run_dir=run_dir,
+                experiment_dir=combo["experiment_dir"],
+                run_dir=combo["run_dir"],
                 client_id=combo["client_id"],
                 sample_index=combo["sample_index"],
                 attack_batch_size=combo["attack_batch_size"],
@@ -607,17 +613,42 @@ def main() -> None:
                 distance=combo["distance"],
                 device=args.device,
             )
+            return {
+                **{k: v for k, v in combo.items() if k != "run_dir"},
+                "run_dir": str(combo["run_dir"]),
+                "status": "ok" if ok else "failed",
+                "returncode": returncode,
+                "stdout_tail": stdout[-500:],
+                "stderr_tail": stderr[-500:],
+            }
 
-            run_records.append(
-                {
-                    **{k: v for k, v in combo.items() if k != "run_dir"},
-                    "run_dir": str(run_dir),
-                    "status": "ok" if ok else "failed",
-                    "returncode": returncode,
-                    "stdout_tail": stdout[-500:],
-                    "stderr_tail": stderr[-500:],
+        if args.jobs == 1:
+            iterator = tqdm(combos_to_run, desc=f"Running attacks [{sweep_name}]")
+            for combo in iterator:
+                run_records.append(execute_combo(combo))
+        else:
+            progress = tqdm(total=len(combos_to_run), desc=f"Running attacks [{sweep_name}]")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as executor:
+                future_to_combo = {
+                    executor.submit(execute_combo, combo): combo for combo in combos_to_run
                 }
-            )
+                for future in concurrent.futures.as_completed(future_to_combo):
+                    combo = future_to_combo[future]
+                    try:
+                        run_records.append(future.result())
+                    except Exception as error:
+                        run_records.append(
+                            {
+                                **{k: v for k, v in combo.items() if k != "run_dir"},
+                                "run_dir": str(combo["run_dir"]),
+                                "status": "failed",
+                                "returncode": -1,
+                                "stdout_tail": "",
+                                "stderr_tail": f"{type(error).__name__}: {error}",
+                            }
+                        )
+                    progress.update(1)
+            progress.close()
 
     if args.analysis_only:
         current_run_dirs = discover_run_dirs_by_sweep_name(args.experiment_dirs, sweep_name)
