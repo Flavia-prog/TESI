@@ -1,0 +1,11 @@
+experiment_dirs:
+  - results/iid_baseline
+client_ids: [0]
+sample_indices: [0, 25, 50]
+attack_batch_sizes: [1, 2, 4]
+attack_iters: [1000]
+num_trials: [5]
+attack_lrs: [0.1]
+distances: [cossim]
+jobs: 1
+output_root: results/attack_parameter_impact

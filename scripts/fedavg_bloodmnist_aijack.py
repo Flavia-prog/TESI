@@ -1,58 +1,41 @@
+from __future__ import annotations
+
 import argparse
 import copy
+import json
 import math
-import random
 from datetime import datetime
 from pathlib import Path
 
-import yaml
-
 import matplotlib.pyplot as plt
-import medmnist
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import yaml
 from aijack.collaborative.fedavg import FedAVGAPI, FedAVGClient, FedAVGServer
-from medmnist import INFO
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
-from torch.utils.data import DataLoader, Subset
-from torchvision import transforms
+from torch.utils.data import DataLoader
 
-
-NUM_CLASSES = 8
-
-
-class BloodMNISTCNN(nn.Module):
-    def __init__(self, num_classes: int = NUM_CLASSES):
-        super().__init__()
-
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.pool = nn.MaxPool2d(2)
-
-        self.fc1 = nn.Linear(64 * 7 * 7, 128)
-        self.fc2 = nn.Linear(128, num_classes)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-
-        x = x.view(x.size(0), -1)
-
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
-
-        return F.log_softmax(x, dim=1)
+from fl_shared.medmnist_data import create_client_dataloaders, load_medmnist_splits, resolve_dataset_name
+from fl_shared.models import available_model_arches, build_model
+from fl_shared.runtime import collect_provenance, load_yaml_config, merge_config, resolve_device, set_seed
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="AIJack FedAvg baseline on BloodMNIST")
+    parser = argparse.ArgumentParser(description="AIJack FedAvg baseline on a MedMNIST dataset")
 
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--experiment-name", type=str, default=None)
 
+    parser.add_argument("--dataset", type=str, default=None)
+    parser.add_argument(
+        "--model-arch",
+        type=str,
+        choices=available_model_arches(),
+        default=None,
+    )
     parser.add_argument("--num-clients", type=int, default=None)
     parser.add_argument("--num-rounds", type=int, default=None)
     parser.add_argument("--local-epochs", type=int, default=None)
@@ -79,21 +62,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_yaml_config(config_path: str | None) -> dict:
-    if config_path is None:
-        return {}
-
-    with Path(config_path).open("r", encoding="utf-8") as f:
-        loaded = yaml.safe_load(f) or {}
-
-    if not isinstance(loaded, dict):
-        raise ValueError("YAML config must be a dictionary at the top level.")
-
-    return loaded
-
-
 def resolve_config(args: argparse.Namespace) -> dict:
     defaults = {
+        "dataset": "bloodmnist",
+        "model_arch": "cnn",
         "num_clients": 5,
         "num_rounds": 20,
         "local_epochs": 1,
@@ -109,6 +81,8 @@ def resolve_config(args: argparse.Namespace) -> dict:
     yaml_config = load_yaml_config(args.config)
 
     cli_values = {
+        "dataset": args.dataset,
+        "model_arch": args.model_arch,
         "num_clients": args.num_clients,
         "num_rounds": args.num_rounds,
         "local_epochs": args.local_epochs,
@@ -121,213 +95,21 @@ def resolve_config(args: argparse.Namespace) -> dict:
         "split_type": args.split_type,
     }
 
-    resolved = defaults.copy()
-    for key in defaults:
-        if key in yaml_config and yaml_config[key] is not None:
-            resolved[key] = yaml_config[key]
-        if cli_values[key] is not None:
-            resolved[key] = cli_values[key]
+    resolved = merge_config(defaults, yaml_config, cli_values)
+    resolved["dataset"] = resolve_dataset_name(str(resolved["dataset"]))
+    resolved["model_arch"] = str(resolved["model_arch"]).lower()
 
     experiment_name = args.experiment_name
     if experiment_name is None:
         experiment_name = yaml_config.get("experiment_name")
     if not experiment_name:
-        experiment_name = f"fedavg_bloodmnist_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        experiment_name = f"fedavg_{resolved['dataset']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     resolved["experiment_name"] = experiment_name
-
     return resolved
 
 
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-    if torch.backends.cudnn.is_available():
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-
-
-def resolve_device(device_arg: str) -> torch.device:
-    if device_arg == "cpu":
-        return torch.device("cpu")
-
-    if device_arg == "cuda":
-        if not torch.cuda.is_available():
-            raise ValueError("CUDA requested but not available.")
-        return torch.device("cuda")
-
-    if device_arg == "mps":
-        if not torch.backends.mps.is_available():
-            raise ValueError("MPS requested but not available.")
-        return torch.device("mps")
-
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-
-    return torch.device("cpu")
-
-
-def load_bloodmnist(data_dir: str):
-    info = INFO["bloodmnist"]
-    data_class = getattr(medmnist, info["python_class"])
-
-    transform = transforms.Compose(
-        [
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.5, 0.5, 0.5],
-                std=[0.5, 0.5, 0.5],
-            ),
-        ]
-    )
-
-    train_dataset = data_class(
-        split="train",
-        transform=transform,
-        download=True,
-        root=data_dir,
-    )
-
-    val_dataset = data_class(
-        split="val",
-        transform=transform,
-        download=True,
-        root=data_dir,
-    )
-
-    test_dataset = data_class(
-        split="test",
-        transform=transform,
-        download=True,
-        root=data_dir,
-    )
-
-    return train_dataset, val_dataset, test_dataset, info
-
-
-def iid_split_indices(n_samples: int, num_clients: int, seed: int) -> list[np.ndarray]:
-    rng = np.random.default_rng(seed)
-    indices = rng.permutation(n_samples)
-    return np.array_split(indices, num_clients)
-
-
-def dirichlet_split_indices(
-    labels: np.ndarray,
-    num_clients: int,
-    alpha: float,
-    seed: int,
-) -> list[np.ndarray]:
-    if alpha <= 0:
-        raise ValueError("alpha must be > 0 for Dirichlet splitting.")
-
-    rng = np.random.default_rng(seed)
-    client_indices = [[] for _ in range(num_clients)]
-
-    for class_id in range(NUM_CLASSES):
-        class_indices = np.where(labels == class_id)[0]
-        if class_indices.size == 0:
-            continue
-
-        rng.shuffle(class_indices)
-        proportions = rng.dirichlet(np.full(num_clients, alpha, dtype=float))
-        split_points = (np.cumsum(proportions)[:-1] * class_indices.size).astype(int)
-        class_splits = np.split(class_indices, split_points)
-
-        for client_id, split in enumerate(class_splits):
-            if split.size > 0:
-                client_indices[client_id].extend(split.tolist())
-
-    split_indices = []
-    for indices in client_indices:
-        arr = np.array(indices, dtype=int)
-        rng.shuffle(arr)
-        split_indices.append(arr)
-
-    lengths = [len(indices) for indices in split_indices]
-    if any(length == 0 for length in lengths):
-        raise ValueError(
-            "Dirichlet split produced at least one empty client. "
-            "Increase alpha or reduce num_clients."
-        )
-
-    concatenated = np.concatenate(split_indices) if split_indices else np.array([], dtype=int)
-    if concatenated.size != labels.size:
-        raise ValueError("Dirichlet split lost samples. Check split implementation.")
-
-    if np.unique(concatenated).size != labels.size:
-        raise ValueError("Dirichlet split duplicated samples. Check split implementation.")
-
-    return split_indices
-
-
-def create_client_dataloaders(
-    train_dataset,
-    num_clients: int,
-    batch_size: int,
-    seed: int,
-    split_type: str,
-    alpha: float,
-):
-    labels = np.array(train_dataset.labels).reshape(-1)
-    if split_type == "iid":
-        split_indices = iid_split_indices(
-            n_samples=len(train_dataset),
-            num_clients=num_clients,
-            seed=seed,
-        )
-    elif split_type == "dirichlet":
-        split_indices = dirichlet_split_indices(
-            labels=labels,
-            num_clients=num_clients,
-            alpha=alpha,
-            seed=seed,
-        )
-    else:
-        raise ValueError(f"Unsupported split_type: {split_type}")
-
-    loaders = []
-    distribution_rows = []
-
-    for client_id, client_indices in enumerate(split_indices):
-        subset = Subset(train_dataset, client_indices.tolist())
-
-        generator = torch.Generator()
-        generator.manual_seed(seed + client_id)
-
-        loader = DataLoader(
-            subset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=0,
-            generator=generator,
-        )
-
-        loaders.append(loader)
-
-        local_labels = labels[client_indices]
-        unique, counts = np.unique(local_labels, return_counts=True)
-        class_count_map = {int(k): int(v) for k, v in zip(unique, counts)}
-
-        row = {
-            "client_id": client_id,
-            "num_samples": int(len(client_indices)),
-        }
-
-        for class_id in range(NUM_CLASSES):
-            row[f"class_{class_id}_count"] = class_count_map.get(class_id, 0)
-
-        distribution_rows.append(row)
-
-    return loaders, pd.DataFrame(distribution_rows)
-
-
-def evaluate_model(model: nn.Module, data_loader: DataLoader, device: torch.device):
+def evaluate_model(model: nn.Module, data_loader: DataLoader, device: torch.device, num_classes: int):
     model.eval()
 
     total_loss = 0.0
@@ -367,7 +149,7 @@ def evaluate_model(model: nn.Module, data_loader: DataLoader, device: torch.devi
         macro_f1 = f1_score(
             all_targets,
             all_preds,
-            labels=list(range(NUM_CLASSES)),
+            labels=list(range(num_classes)),
             average="macro",
             zero_division=0,
         )
@@ -382,18 +164,7 @@ def evaluate_model(model: nn.Module, data_loader: DataLoader, device: torch.devi
     }
 
 
-def plot_confusion_matrix(cm: np.ndarray, class_names: list[str], save_path: Path) -> None:
-    short_names = [
-        "basophil",
-        "eosinophil",
-        "erythroblast",
-        "imm. granulocytes",
-        "lymphocyte",
-        "monocyte",
-        "neutrophil",
-        "platelet",
-    ]
-
+def plot_confusion_matrix(cm: np.ndarray, class_names: list[str], save_path: Path, title: str) -> None:
     fig, ax = plt.subplots(figsize=(10, 8))
 
     image = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
@@ -402,15 +173,14 @@ def plot_confusion_matrix(cm: np.ndarray, class_names: list[str], save_path: Pat
     ax.set(
         xticks=np.arange(cm.shape[1]),
         yticks=np.arange(cm.shape[0]),
-        xticklabels=short_names,
-        yticklabels=short_names,
+        xticklabels=class_names,
+        yticklabels=class_names,
         ylabel="True label",
         xlabel="Predicted label",
-        title="AIJack FedAvg BloodMNIST Confusion Matrix",
+        title=title,
     )
 
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
-
     threshold = cm.max() / 2.0 if cm.size > 0 else 0.0
 
     for i in range(cm.shape[0]):
@@ -430,9 +200,7 @@ def plot_confusion_matrix(cm: np.ndarray, class_names: list[str], save_path: Pat
 
 
 def get_state_dict_from_model(model: nn.Module):
-    return copy.deepcopy(
-        {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-    )
+    return copy.deepcopy({k: v.detach().cpu().clone() for k, v in model.state_dict().items()})
 
 
 def move_state_dict_to_device(state_dict, device: torch.device):
@@ -443,60 +211,62 @@ def main() -> None:
     args = parse_args()
     config = resolve_config(args)
 
-    set_seed(config["seed"])
-
-    device = resolve_device(config["device"])
+    set_seed(int(config["seed"]))
+    device = resolve_device(str(config["device"]))
 
     results_root = Path("results")
     results_root.mkdir(parents=True, exist_ok=True)
 
-    results_dir = results_root / config["experiment_name"]
+    results_dir = results_root / str(config["experiment_name"])
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    train_dataset, val_dataset, test_dataset, info = load_bloodmnist(config["data_dir"])
+    train_dataset, val_dataset, test_dataset, info, n_channels, num_classes = load_medmnist_splits(
+        str(config["dataset"]),
+        str(config["data_dir"]),
+    )
 
-    class_names = [info["label"][str(i)] for i in range(len(info["label"]))]
+    class_names = [str(info["label"][str(i)]) for i in range(num_classes)]
 
     local_dataloaders, client_distribution_df = create_client_dataloaders(
         train_dataset=train_dataset,
-        num_clients=config["num_clients"],
-        batch_size=config["batch_size"],
-        seed=config["seed"],
-        split_type=config["split_type"],
-        alpha=config["alpha"],
+        num_clients=int(config["num_clients"]),
+        batch_size=int(config["batch_size"]),
+        seed=int(config["seed"]),
+        split_type=str(config["split_type"]),
+        alpha=float(config["alpha"]),
+        num_classes=num_classes,
     )
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=config["batch_size"],
+        batch_size=int(config["batch_size"]),
         shuffle=False,
         num_workers=0,
     )
 
     test_loader = DataLoader(
         test_dataset,
-        batch_size=config["batch_size"],
+        batch_size=int(config["batch_size"]),
         shuffle=False,
         num_workers=0,
     )
 
     clients = [
         FedAVGClient(
-            BloodMNISTCNN(num_classes=NUM_CLASSES).to(device),
+            build_model(str(config["model_arch"]), n_channels, num_classes).to(device),
             user_id=client_id,
         )
-        for client_id in range(config["num_clients"])
+        for client_id in range(int(config["num_clients"]))
     ]
 
-    # Use SGD to stay close to the official AIJack FedAvg documentation.
     local_optimizers = [
-        torch.optim.SGD(client.parameters(), lr=config["lr"])
+        torch.optim.SGD(client.parameters(), lr=float(config["lr"]))
         for client in clients
     ]
 
     server = FedAVGServer(
         clients,
-        BloodMNISTCNN(num_classes=NUM_CLASSES).to(device),
+        build_model(str(config["model_arch"]), n_channels, num_classes).to(device),
     )
 
     history_rows = []
@@ -518,6 +288,7 @@ def main() -> None:
             model=api.server,
             data_loader=val_loader,
             device=device,
+            num_classes=num_classes,
         )
 
         history_rows.append(
@@ -549,14 +320,14 @@ def main() -> None:
         criterion,
         local_optimizers,
         local_dataloaders,
-        num_communication=config["num_rounds"],
-        local_epoch=config["local_epochs"],
+        num_communication=int(config["num_rounds"]),
+        local_epoch=int(config["local_epochs"]),
         custom_action=custom_action,
     )
 
     print(f"Using device: {device}")
     print(
-        f"Starting AIJack FedAvg BloodMNIST baseline | "
+        f"Starting AIJack FedAvg {config['dataset']} ({config['model_arch']}) | "
         f"clients={config['num_clients']}, "
         f"rounds={config['num_rounds']}, "
         f"local_epochs={config['local_epochs']}, "
@@ -581,11 +352,13 @@ def main() -> None:
         model=server,
         data_loader=test_loader,
         device=device,
+        num_classes=num_classes,
     )
 
     final_config = {
         "experiment_name": config["experiment_name"],
-        "dataset": "bloodmnist",
+        "dataset": config["dataset"],
+        "model_arch": config["model_arch"],
         "framework": "aijack",
         "algorithm": "fedavg",
         "num_clients": int(config["num_clients"]),
@@ -608,7 +381,7 @@ def main() -> None:
     per_class_f1 = f1_score(
         test_metrics["targets"],
         test_metrics["preds"],
-        labels=list(range(NUM_CLASSES)),
+        labels=list(range(num_classes)),
         average=None,
         zero_division=0,
     )
@@ -616,19 +389,19 @@ def main() -> None:
     cm = confusion_matrix(
         test_metrics["targets"],
         test_metrics["preds"],
-        labels=list(range(NUM_CLASSES)),
+        labels=list(range(num_classes)),
     )
 
     history_path = results_dir / "history.csv"
     pd.DataFrame(history_rows).to_csv(history_path, index=False)
 
-    client_distribution_path = (
-        results_dir / "client_distributions.csv"
-    )
+    client_distribution_path = results_dir / "client_distributions.csv"
     client_distribution_df.to_csv(client_distribution_path, index=False)
 
     test_row = {
         "seed": config["seed"],
+        "dataset": config["dataset"],
+        "model_arch": config["model_arch"],
         "num_clients": config["num_clients"],
         "num_rounds": config["num_rounds"],
         "local_epochs": config["local_epochs"],
@@ -656,7 +429,23 @@ def main() -> None:
     torch.save(server.state_dict(), model_path)
 
     cm_path = results_dir / "confusion_matrix.png"
-    plot_confusion_matrix(cm, class_names, cm_path)
+    plot_confusion_matrix(
+        cm,
+        class_names,
+        cm_path,
+        title=f"AIJack FedAvg {config['dataset']} ({config['model_arch']}) Confusion Matrix",
+    )
+
+    provenance_path = results_dir / "provenance.json"
+    with provenance_path.open("w", encoding="utf-8") as f:
+        provenance_payload = collect_provenance(
+            extra={
+                "script": "fedavg_bloodmnist_aijack.py",
+                "dataset": config["dataset"],
+                "model_arch": config["model_arch"],
+            }
+        )
+        json.dump(provenance_payload, f, indent=2)
 
     print("\nFinal test evaluation:")
     print(f"Best round: {best_round}")
@@ -675,6 +464,7 @@ def main() -> None:
     print(f"Saved client distributions to: {client_distribution_path}")
     print(f"Saved final model to: {model_path}")
     print(f"Saved confusion matrix to: {cm_path}")
+    print(f"Saved provenance to: {provenance_path}")
 
 
 if __name__ == "__main__":

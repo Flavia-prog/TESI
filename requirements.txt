@@ -1,7 +1,8 @@
-aijack
+aijack==0.0.1b2
 torch
 torchvision
 medmnist
+torchmetrics
 numpy
 scikit-learn
 matplotlib

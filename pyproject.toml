@@ -1,0 +1,28 @@
+[project]
+name = "thesis-fl"
+version = "0.1.0"
+description = "Federated learning and gradient inversion experiments for thesis work"
+requires-python = ">=3.10"
+dependencies = [
+  "aijack==0.0.1b2",
+  "torch",
+  "torchvision",
+  "medmnist",
+  "torchmetrics",
+  "numpy",
+  "scikit-learn",
+  "matplotlib",
+  "pandas",
+  "tqdm",
+  "pyyaml",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

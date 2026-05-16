@@ -1,0 +1,12 @@
+experiment_dirs:
+  - results/iid_dp_sigma_05
+  - results/iid_dp_sigma_1
+client_ids: [0]
+sample_indices: [0, 25]
+attack_batch_sizes: [1]
+attack_iters: [1000]
+num_trials: [5]
+attack_lrs: [0.1]
+distances: [cossim]
+jobs: 1
+output_root: results/attack_parameter_impact

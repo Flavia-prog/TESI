@@ -1,6 +1,25 @@
 # FL Thesis Experiments
 
-This repository contains federated learning experiments for BloodMNIST using AIJack.
+This repository contains federated learning experiments for BloodMNIST/PathMNIST using AIJack.
+
+## Package-Based Workflow (New)
+
+The codebase now includes a package-style layout under `src/thesis/`:
+
+- `thesis.data`: dataset loaders and client split utilities
+- `thesis.models`: CNN registry (`small_cnn`, `medium_cnn`, `lenet`)
+- `thesis.federated`: reusable FedAvg and FedAvg+DP training functions
+- `thesis.attacks`: reusable in-process gradient inversion attack runner
+- `thesis.metrics`: reconstruction metrics (MSE, windowed SSIM, optional LPIPS)
+- `thesis.experiments`: dataclass configs and in-process sweep runner
+- `thesis.utils`: seed/device/io/provenance helpers
+
+Thin CLI wrappers are available in `scripts/`:
+
+- `python scripts/train_fedavg.py --config ...`
+- `python scripts/train_fedavg_dp.py --config ...`
+- `python scripts/run_attack.py --experiment-dir ...`
+- `python scripts/run_sweep.py --config ...`
 
 The goal is to study how to build federated learning models while balancing utility and privacy. The current stage focuses on building reproducible FedAvg baselines under IID and non-IID client data distributions.
 

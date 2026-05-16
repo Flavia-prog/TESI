@@ -1,0 +1,4 @@
+dataset: pathmnist
+data_dir: ./data
+split_type: iid
+alpha: 0.5

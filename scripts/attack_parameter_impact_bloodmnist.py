@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import argparse
 import concurrent.futures
 import json
 import re
 import subprocess
-import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,7 +20,12 @@ from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
+from torchmetrics.functional.image import structural_similarity_index_measure
 from tqdm import tqdm
+
+from fl_shared.models import available_model_arches
+from fl_shared.runtime import collect_provenance
+from gradient_inversion_bloodmnist_aijack import run_gradient_inversion_attack
 
 
 DEFAULT_EXPERIMENT_DIRS = [
@@ -54,6 +61,20 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=["cossim"],
         choices=["l2", "cossim"],
+    )
+
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        help="Optional dataset override for every run (e.g., bloodmnist, pathmnist).",
+    )
+    parser.add_argument(
+        "--model-arch",
+        type=str,
+        default=None,
+        choices=available_model_arches(),
+        help="Optional model architecture override for every run.",
     )
 
     parser.add_argument(
@@ -105,13 +126,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--execution-mode",
+        type=str,
+        choices=["inprocess", "subprocess"],
+        default="inprocess",
+        help="Use inprocess to avoid Python startup/reload overhead.",
+    )
+    parser.add_argument(
         "--attack-script",
         type=str,
         default="gradient_inversion_bloodmnist_aijack.py",
-        help=(
-            "Attack script to execute for each run. Relative paths are resolved "
-            "from the scripts directory."
-        ),
+        help="Only used when --execution-mode subprocess.",
     )
 
     return parser.parse_args()
@@ -153,44 +178,19 @@ def denormalize(x: torch.Tensor) -> torch.Tensor:
 
 
 def compute_ssim_per_image(original: torch.Tensor, reconstructed: torch.Tensor) -> torch.Tensor:
-    """
-    Global SSIM-like score per image/channel, then averaged across channels.
-
-    This is NOT windowed SSIM. It is acceptable for exploratory screening,
-    but should be described as a global SSIM-like similarity proxy.
-    """
-    c1 = 0.01**2
-    c2 = 0.03**2
-
-    mu_x = original.mean(dim=(-1, -2), keepdim=True)
-    mu_y = reconstructed.mean(dim=(-1, -2), keepdim=True)
-
-    sigma_x = ((original - mu_x) ** 2).mean(dim=(-1, -2), keepdim=True)
-    sigma_y = ((reconstructed - mu_y) ** 2).mean(dim=(-1, -2), keepdim=True)
-    sigma_xy = ((original - mu_x) * (reconstructed - mu_y)).mean(
-        dim=(-1, -2), keepdim=True
-    )
-
-    numerator = (2 * mu_x * mu_y + c1) * (2 * sigma_xy + c2)
-    denominator = (mu_x**2 + mu_y**2 + c1) * (sigma_x + sigma_y + c2)
-    ssim_map = numerator / denominator
-
-    return ssim_map.squeeze(-1).squeeze(-1).mean(dim=1)
+    scores = []
+    for image_index in range(original.size(0)):
+        orig_img = original[image_index : image_index + 1]
+        recon_img = reconstructed[image_index : image_index + 1]
+        score = structural_similarity_index_measure(orig_img, recon_img, data_range=1.0)
+        scores.append(score)
+    return torch.stack(scores)
 
 
 def compute_best_metrics(
     original: torch.Tensor,
     reconstructed: torch.Tensor,
 ) -> tuple[float | None, float | None]:
-    """
-    Computes best MSE and best SSIM-like score.
-
-    If reconstructed contains multiple candidates/trials stacked as:
-    [num_candidates * batch_size, C, H, W],
-    this function compares each candidate batch to the original batch and keeps:
-    - minimum MSE
-    - maximum SSIM-like score
-    """
     if original.ndim != 4 or reconstructed.ndim != 4:
         return None, None
 
@@ -230,8 +230,8 @@ def load_yaml(path: Path) -> dict[str, Any]:
 
 
 def run_attack(
-    python_exe: str,
-    script_path: Path,
+    execution_mode: str,
+    attack_script_path: Path,
     experiment_dir: Path,
     run_dir: Path,
     client_id: int,
@@ -242,54 +242,121 @@ def run_attack(
     attack_lr: float,
     distance: str,
     device: str,
+    dataset_override: str | None,
+    model_arch_override: str | None,
 ) -> tuple[bool, str, str, int]:
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        python_exe,
-        str(script_path),
-        "--experiment-dir",
-        str(experiment_dir),
-        "--client-id",
-        str(client_id),
-        "--sample-index",
-        str(sample_index),
-        "--attack-batch-size",
-        str(attack_batch_size),
-        "--attack-iters",
-        str(attack_iters),
-        "--num-trials",
-        str(num_trials),
-        "--attack-lr",
-        str(attack_lr),
-        "--distance",
-        distance,
-        "--device",
-        device,
-        "--output-dir",
-        str(run_dir),
-    ]
+    if execution_mode == "subprocess":
+        import sys
 
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+        cmd = [
+            sys.executable,
+            str(attack_script_path),
+            "--experiment-dir",
+            str(experiment_dir),
+            "--client-id",
+            str(client_id),
+            "--sample-index",
+            str(sample_index),
+            "--attack-batch-size",
+            str(attack_batch_size),
+            "--attack-iters",
+            str(attack_iters),
+            "--num-trials",
+            str(num_trials),
+            "--attack-lr",
+            str(attack_lr),
+            "--distance",
+            distance,
+            "--device",
+            device,
+            "--output-dir",
+            str(run_dir),
+        ]
+
+        if dataset_override:
+            cmd.extend(["--dataset", dataset_override])
+        if model_arch_override:
+            cmd.extend(["--model-arch", model_arch_override])
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+        stdout_text = result.stdout or ""
+        stderr_text = result.stderr or ""
+        returncode = result.returncode
+    else:
+        cmd = [
+            "python",
+            str(attack_script_path),
+            "--experiment-dir",
+            str(experiment_dir),
+            "--client-id",
+            str(client_id),
+            "--sample-index",
+            str(sample_index),
+            "--attack-batch-size",
+            str(attack_batch_size),
+            "--attack-iters",
+            str(attack_iters),
+            "--num-trials",
+            str(num_trials),
+            "--attack-lr",
+            str(attack_lr),
+            "--distance",
+            distance,
+            "--device",
+            device,
+            "--output-dir",
+            str(run_dir),
+        ]
+        if dataset_override:
+            cmd.extend(["--dataset", dataset_override])
+        if model_arch_override:
+            cmd.extend(["--model-arch", model_arch_override])
+
+        try:
+            metrics = run_gradient_inversion_attack(
+                experiment_dir=experiment_dir,
+                client_id=client_id,
+                sample_index=sample_index,
+                attack_batch_size=attack_batch_size,
+                attack_iters=attack_iters,
+                num_trials=num_trials,
+                attack_lr=attack_lr,
+                distance=distance,
+                device_arg=device,
+                output_dir=run_dir,
+                dataset_override=dataset_override,
+                model_arch_override=model_arch_override,
+            )
+            stdout_text = json.dumps(
+                {
+                    "status": metrics.get("attack_status", "ok"),
+                    "output_dir": metrics.get("output_dir"),
+                }
+            )
+            stderr_text = ""
+            returncode = 0
+        except Exception as error:
+            stdout_text = ""
+            stderr_text = f"{type(error).__name__}: {error}\n{traceback.format_exc()}"
+            returncode = 1
 
     with (run_dir / "attack_stdout.txt").open("w", encoding="utf-8") as f:
-        f.write(result.stdout or "")
+        f.write(stdout_text)
 
     with (run_dir / "attack_stderr.txt").open("w", encoding="utf-8") as f:
-        f.write(result.stderr or "")
+        f.write(stderr_text)
 
-    if result.returncode != 0:
+    if returncode != 0:
         failure_info = {
             "timestamp": datetime.now().isoformat(),
             "command": cmd,
-            "returncode": result.returncode,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
+            "execution_mode": execution_mode,
+            "returncode": returncode,
+            "stdout": stdout_text,
+            "stderr": stderr_text,
             "experiment_dir": str(experiment_dir),
             "client_id": client_id,
             "sample_index": sample_index,
@@ -298,11 +365,13 @@ def run_attack(
             "num_trials": num_trials,
             "attack_lr": attack_lr,
             "distance": distance,
+            "dataset_override": dataset_override,
+            "model_arch_override": model_arch_override,
         }
         with (run_dir / "attack_failed.json").open("w", encoding="utf-8") as f:
             json.dump(failure_info, f, indent=2)
 
-    return result.returncode == 0, result.stdout.strip(), result.stderr.strip(), result.returncode
+    return returncode == 0, stdout_text.strip(), stderr_text.strip(), returncode
 
 
 def collect_rows_from_run_dirs(run_dirs: list[Path]) -> list[dict[str, Any]]:
@@ -348,6 +417,8 @@ def collect_rows_from_run_dirs(run_dirs: list[Path]) -> list[dict[str, Any]]:
         config = load_yaml(experiment_dir / "config.yaml")
 
         for key in [
+            "dataset",
+            "model_arch",
             "num_clients",
             "num_rounds",
             "local_epochs",
@@ -412,6 +483,8 @@ def prepare_regression_data(
         "distance",
         "client_id",
         "sample_index",
+        "train_dataset",
+        "train_model_arch",
         "train_split_type",
         "train_alpha",
         "train_num_clients",
@@ -438,7 +511,6 @@ def prepare_regression_data(
     X = filtered[feature_columns].copy()
     y = filtered[target_metric].astype(float)
 
-    # Treat identifiers as categorical, not numeric quantities.
     for categorical_identifier in ["client_id", "sample_index", "train_seed"]:
         if categorical_identifier in X.columns:
             X[categorical_identifier] = X[categorical_identifier].astype(str)
@@ -489,16 +561,14 @@ def grouped_permutation_importance(
             }
         )
 
-    return pd.DataFrame(rows).sort_values(
-        "importance_mean_mae_increase",
-        ascending=False,
-    )
+    return pd.DataFrame(rows).sort_values("importance_mean_mae_increase", ascending=False)
 
 
 def save_group_summaries(aggregated: pd.DataFrame, analysis_dir: Path) -> None:
     metric_cols = [col for col in ["best_mse", "best_ssim", "reconstruction_mse"] if col in aggregated.columns]
 
     group_specs = {
+        "group_summary_by_dataset_model.csv": ["train_dataset", "train_model_arch"],
         "group_summary_by_split.csv": ["train_split_type", "train_alpha"],
         "group_summary_by_batch_size.csv": ["attack_batch_size"],
         "group_summary_by_distance.csv": ["distance"],
@@ -517,11 +587,8 @@ def save_group_summaries(aggregated: pd.DataFrame, analysis_dir: Path) -> None:
             .reset_index()
         )
 
-        # Flatten multi-index columns.
         summary.columns = [
-            "_".join(str(part) for part in col if part != "")
-            if isinstance(col, tuple)
-            else str(col)
+            "_".join(str(part) for part in col if part != "") if isinstance(col, tuple) else str(col)
             for col in summary.columns
         ]
 
@@ -533,12 +600,12 @@ def main() -> None:
     if args.jobs < 1:
         raise ValueError("--jobs must be >= 1.")
 
-    script_path = Path(args.attack_script)
-    if not script_path.is_absolute():
-        script_path = Path(__file__).resolve().parent / script_path
-    script_path = script_path.resolve()
-    if not script_path.exists():
-        raise FileNotFoundError(f"Attack script not found: {script_path}")
+    attack_script_path = Path(args.attack_script)
+    if not attack_script_path.is_absolute():
+        attack_script_path = Path(__file__).resolve().parent / attack_script_path
+    attack_script_path = attack_script_path.resolve()
+    if args.execution_mode == "subprocess" and not attack_script_path.exists():
+        raise FileNotFoundError(f"Attack script not found: {attack_script_path}")
 
     output_root = Path(args.output_root)
     run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -612,8 +679,8 @@ def main() -> None:
 
         def execute_combo(combo: dict[str, Any]) -> dict[str, Any]:
             ok, stdout, stderr, returncode = run_attack(
-                python_exe=sys.executable,
-                script_path=script_path,
+                execution_mode=args.execution_mode,
+                attack_script_path=attack_script_path,
                 experiment_dir=combo["experiment_dir"],
                 run_dir=combo["run_dir"],
                 client_id=combo["client_id"],
@@ -624,6 +691,8 @@ def main() -> None:
                 attack_lr=combo["attack_lr"],
                 distance=combo["distance"],
                 device=args.device,
+                dataset_override=args.dataset,
+                model_arch_override=args.model_arch,
             )
             return {
                 **{k: v for k, v in combo.items() if k != "run_dir"},
@@ -641,9 +710,7 @@ def main() -> None:
         else:
             progress = tqdm(total=len(combos_to_run), desc=f"Running attacks [{sweep_name}]")
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as executor:
-                future_to_combo = {
-                    executor.submit(execute_combo, combo): combo for combo in combos_to_run
-                }
+                future_to_combo = {executor.submit(execute_combo, combo): combo for combo in combos_to_run}
                 for future in concurrent.futures.as_completed(future_to_combo):
                     combo = future_to_combo[future]
                     try:
@@ -701,9 +768,7 @@ def main() -> None:
         )
         print(f"WARNING: {regression_warning}")
 
-    numeric_cols = [
-        col for col in X.columns if pd.api.types.is_numeric_dtype(X[col])
-    ]
+    numeric_cols = [col for col in X.columns if pd.api.types.is_numeric_dtype(X[col])]
     categorical_cols = [col for col in X.columns if col not in numeric_cols]
 
     preprocessor = ColumnTransformer(
@@ -766,6 +831,9 @@ def main() -> None:
         "sweep_name": sweep_name,
         "analysis_dir": str(analysis_dir.resolve()),
         "target_metric": args.target_metric,
+        "execution_mode": args.execution_mode,
+        "dataset_override": args.dataset,
+        "model_arch_override": args.model_arch,
         "n_total_rows": int(len(aggregated)),
         "n_regression_rows": int(len(X)),
         "n_features_used": int(len(varying_columns)),
@@ -784,6 +852,16 @@ def main() -> None:
     summary_path = analysis_dir / "summary.json"
     with summary_path.open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
+
+    provenance = collect_provenance(
+        extra={
+            "script": "attack_parameter_impact_bloodmnist.py",
+            "sweep_name": sweep_name,
+            "execution_mode": args.execution_mode,
+        }
+    )
+    with (analysis_dir / "provenance.json").open("w", encoding="utf-8") as f:
+        json.dump(provenance, f, indent=2)
 
     print("Exploratory attack-impact analysis completed.")
     print(f"Sweep name: {sweep_name}")
