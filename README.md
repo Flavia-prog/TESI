@@ -23,6 +23,8 @@ Thin CLI wrappers are available in `scripts/`:
 
 The goal is to study how to build federated learning models while balancing utility and privacy. The current stage focuses on building reproducible FedAvg baselines under IID and non-IID client data distributions.
 
+Legacy standalone scripts (for backward compatibility) still exist in `scripts/`, but the package wrappers above are the recommended entry points.
+
 ## Environment Setup
 
 Activate the virtual environment:
@@ -67,7 +69,7 @@ The script uses the core AIJack FedAvg components:
 Run the IID baseline using the YAML config:
 
 ```bash
-python scripts/fedavg_bloodmnist_aijack.py \
+python scripts/train_fedavg.py \
   --config configs/iid_baseline.yaml
 ```
 
@@ -110,14 +112,30 @@ In this setup:
 Run the non-IID experiments:
 
 ```bash
-python scripts/fedavg_bloodmnist_aijack.py \
+python scripts/train_fedavg.py \
   --config configs/noniid_alpha_1.yaml
 
-python scripts/fedavg_bloodmnist_aijack.py \
+python scripts/train_fedavg.py \
   --config configs/noniid_alpha_05.yaml
 
-python scripts/fedavg_bloodmnist_aijack.py \
+python scripts/train_fedavg.py \
   --config configs/noniid_alpha_01.yaml
+```
+
+## PathMNIST Equivalents
+
+Use the same training script with dataset override:
+
+```bash
+python scripts/train_fedavg.py \
+  --config configs/iid_baseline.yaml \
+  --dataset pathmnist \
+  --experiment-name pathmnist_iid_baseline
+
+python scripts/train_fedavg.py \
+  --config configs/noniid_alpha_01.yaml \
+  --dataset pathmnist \
+  --experiment-name pathmnist_noniid_alpha_01
 ```
 
 Results are saved to:
@@ -144,7 +162,7 @@ final_model.pt
 The experiment can also be run manually without a YAML config:
 
 ```bash
-python scripts/fedavg_bloodmnist_aijack.py \
+python scripts/train_fedavg.py \
   --num-clients 5 \
   --num-rounds 20 \
   --local-epochs 1 \
@@ -196,15 +214,17 @@ Device: CPU
 
 This confirms that the AIJack FedAvg pipeline is working and that the CNN global model learns meaningful BloodMNIST class distinctions.
 
+This baseline is intentionally lower than SOTA centralized BloodMNIST benchmarks. The thesis focus is privacy attack behavior and privacy-utility tradeoffs under controlled FL conditions, not utility maximization.
+
 ## Next Steps
 
 Planned next steps:
 
-1. Compare IID and non-IID client distributions.
-2. Study how client heterogeneity affects utility.
-3. Tune key federated learning parameters such as communication rounds, local epochs, and number of clients.
-4. Add privacy mechanisms.
-5. Evaluate the privacy-utility tradeoff.
+1. Run controlled attack batch-size sweeps and quantify reconstruction quality changes.
+2. Run controlled architecture sweeps across `small_cnn`, `medium_cnn`, and `lenet`.
+3. Run training-stage sweeps to measure vulnerability across FL rounds.
+4. Replicate key attack-condition findings on PathMNIST.
+5. Run DP-SGD privacy-utility-defense sweeps as supporting experiments.
 
 ## Separate Attack Evaluation Script
 
@@ -212,17 +232,17 @@ Gradient inversion is implemented as a separate stage from FL training.
 
 Training stage:
 
-- `scripts/fedavg_bloodmnist_aijack.py` trains FedAvg and saves artifacts in `results/<experiment_name>/`.
+- `scripts/train_fedavg.py` trains FedAvg and saves artifacts in `results/<experiment_name>/`.
 
 Attack stage:
 
-- `scripts/gradient_inversion_bloodmnist_aijack.py` loads a trained experiment folder and evaluates privacy leakage.
+- `scripts/run_attack.py` loads a trained experiment folder and evaluates privacy leakage.
 - It uses AIJack `GradientInversionAttackServerManager` to attach a malicious FedAvg server and reconstruct private client images from shared gradients.
 
 IID example:
 
 ```bash
-python scripts/gradient_inversion_bloodmnist_aijack.py \
+python scripts/run_attack.py \
   --experiment-dir results/iid_baseline \
   --client-id 0 \
   --sample-index 0 \
@@ -235,7 +255,7 @@ python scripts/gradient_inversion_bloodmnist_aijack.py \
 Non-IID example:
 
 ```bash
-python scripts/gradient_inversion_bloodmnist_aijack.py \
+python scripts/run_attack.py \
   --experiment-dir results/noniid_alpha_05 \
   --client-id 0 \
   --sample-index 0 \
@@ -259,7 +279,7 @@ The attack script:
 
 DP-style defense experiments are available in:
 
-- `scripts/fedavg_bloodmnist_aijack_dp.py`
+- `scripts/train_fedavg_dp.py`
 
 This script runs the same BloodMNIST FedAvg pipeline with per-client update:
 
@@ -271,13 +291,13 @@ Implementation detail: it uses AIJack DP components (`DPSGDManager` + `DPSGDClie
 Run a DP experiment:
 
 ```bash
-python scripts/fedavg_bloodmnist_aijack_dp.py --config configs/iid_dp_noise_001.yaml
+python scripts/train_fedavg_dp.py --config configs/iid_dp_noise_001.yaml
 ```
 
 Run gradient inversion attack on the trained DP model:
 
 ```bash
-python scripts/gradient_inversion_bloodmnist_aijack.py \
+python scripts/run_attack.py \
   --experiment-dir results/iid_dp_noise_001 \
   --client-id 0 \
   --sample-index 0 \
