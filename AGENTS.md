@@ -71,6 +71,16 @@ Important scripts:
   inversion attack evaluation.
 - `scripts/gradient_inversion_medmnist_aijack.py`: generalized MedMNIST
   gradient inversion attack evaluation.
+- `scripts/exploratory_reconstruction_parameter_analysis.py`: standalone
+  exploratory analysis of which attack/design parameters are associated with
+  reconstruction success. It does not depend on
+  `attack_parameter_impact_bloodmnist.py`; it ingests attack metric CSVs and/or
+  `attack_metrics.json` files, retains failed/no-MSE rows in the normalized
+  dataset, reports group summaries, held-out cross-validated ridge permutation
+  screening, numeric Spearman screening, and matched within-setting contrasts.
+  Treat its model-based importance as predictive prioritization, not causal
+  evidence; prefer matched contrasts and repeated validation across datasets
+  before making thesis claims.
 - `scripts/attack_parameter_impact_bloodmnist.py`: attack sweep and exploratory
   regression/feature-importance analysis. Random-forest permutation importance
   from this script is a screening statistic, not a causal estimate. Prefer the
@@ -82,6 +92,17 @@ Important scripts:
   privacy-utility matrix.
 - `scripts/plot_frontier.py`: headline privacy-utility frontier plots.
 
+Archived scripts:
+
+- `scripts/_archive_20260516/plot_day2_screening_results.py`: old professor
+  update plotting helper. Its outputs are already preserved under
+  `results/current/analysis/attack_parameter_impact/`.
+- `scripts/_archive_20260516/build_day3_exploratory_delivery_package.py`: old
+  delivery-package helper that depends partly on archived MSE analysis outputs.
+  Keep for historical regeneration only.
+- The empty `scripts/run_experiment.py` wrapper was removed during the
+  2026-05-16 cleanup.
+
 Important result/status references:
 
 - `EXPERIMENTS_RUN_SO_FAR.md`: compact table of completed training runs,
@@ -89,8 +110,10 @@ Important result/status references:
 - `EXPERIMENT_LOG.md`: historical manual log of utility and attack experiments.
 - `results/current/`: current thesis-facing outputs. Training runs are under
   `results/current/training/`, attack-parameter analyses are under
-  `results/current/analysis/attack_parameter_impact/`, and privacy-utility
-  matrix summaries are under `results/current/privacy_utility/`.
+  `results/current/analysis/attack_parameter_impact/`, the standalone
+  exploratory reconstruction-parameter analysis is under
+  `results/current/analysis/exploratory_reconstruction_parameter_analysis/`,
+  and privacy-utility matrix summaries are under `results/current/privacy_utility/`.
 - `results/_archive_low_value_20260516/`: older pilots, partial duplicates,
   individual attack-output folders, run logs, generated cache/system files, and
   other low-value generated artifacts. They were archived rather than deleted.
