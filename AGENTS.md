@@ -72,10 +72,14 @@ Important scripts:
 - `scripts/gradient_inversion_medmnist_aijack.py`: generalized MedMNIST
   gradient inversion attack evaluation.
 - `scripts/exploratory_reconstruction_parameter_analysis.py`: standalone
-  exploratory analysis of which attack/design parameters are associated with
-  reconstruction success. It does not depend on
-  `attack_parameter_impact_bloodmnist.py`; it ingests attack metric CSVs and/or
-  `attack_metrics.json` files, retains failed/no-MSE rows in the normalized
+  AIJack sweep-and-analysis script for studying which attacker/design
+  parameters affect reconstruction success. With `--run-aijack-sweep`, it
+  executes the AIJack-based `gradient_inversion_medmnist_aijack.py` over a
+  controlled grid of experiment directories, clients, samples, attack batch
+  sizes, iteration counts, trials, attack learning rates, and AIJack distance
+  metrics, saving per-cell outputs and an `aijack_sweep_manifest.csv`. It can
+  also run in analysis-only mode on existing metric CSVs and/or
+  `attack_metrics.json` files. It retains failed/no-MSE rows in the normalized
   dataset, reports group summaries, held-out cross-validated ridge permutation
   screening, numeric Spearman screening, and matched within-setting contrasts.
   Treat its model-based importance as predictive prioritization, not causal

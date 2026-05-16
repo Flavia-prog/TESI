@@ -1,7 +1,11 @@
 import argparse
+import itertools
 import json
 import math
 import re
+import subprocess
+import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +15,7 @@ import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import RidgeCV
 from sklearn.metrics import r2_score
-from sklearn.model_selection import GroupKFold, KFold, cross_val_score
+from sklearn.model_selection import GroupKFold, KFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -21,6 +25,7 @@ DEFAULT_MATRIX_CSV = (
     "full_dp_privacy_utility_matrix_summary.csv"
 )
 DEFAULT_OUTPUT_DIR = "results/current/analysis/exploratory_reconstruction_parameter_analysis"
+DEFAULT_AIJACK_SCRIPT = "scripts/gradient_inversion_medmnist_aijack.py"
 
 LEAKAGE_METRIC_DESCRIPTION = (
     "leakage_score = -log10(reconstruction_mse); higher means stronger "
@@ -32,9 +37,109 @@ LEAKAGE_METRIC_DESCRIPTION = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Exploratory, conservative analysis of which attack/design "
-            "parameters are associated with reconstruction success."
+            "Run laptop-scale AIJack gradient-inversion sweeps over attacker "
+            "settings, then perform conservative exploratory regression of "
+            "reconstruction quality."
         )
+    )
+    parser.add_argument(
+        "--run-aijack-sweep",
+        action="store_true",
+        help=(
+            "Execute AIJack gradient inversion attacks before analysis. "
+            "Without this flag, the script only analyzes existing metrics."
+        ),
+    )
+    parser.add_argument(
+        "--analysis-only",
+        action="store_true",
+        help="Alias for the default behavior: do not execute new AIJack attacks.",
+    )
+    parser.add_argument(
+        "--aijack-attack-script",
+        default=DEFAULT_AIJACK_SCRIPT,
+        help=f"AIJack attack script to execute. Default: {DEFAULT_AIJACK_SCRIPT}",
+    )
+    parser.add_argument(
+        "--experiment-dir",
+        action="append",
+        default=[],
+        help=(
+            "Trained FedAvg experiment directory containing config.yaml and "
+            "final_model.pt. Can be passed more than once. If omitted during "
+            "a sweep, a small BloodMNIST baseline set under results/current is used."
+        ),
+    )
+    parser.add_argument(
+        "--dataset",
+        action="append",
+        default=[],
+        help=(
+            "Optional dataset override for the corresponding --experiment-dir. "
+            "If one value is supplied it is reused for all experiment dirs."
+        ),
+    )
+    parser.add_argument(
+        "--clients",
+        default="0",
+        help="Comma-separated client ids for the AIJack sweep. Default: 0",
+    )
+    parser.add_argument(
+        "--sample-indices",
+        default="0,25",
+        help="Comma-separated sample indices for the AIJack sweep. Default: 0,25",
+    )
+    parser.add_argument(
+        "--attack-batch-sizes",
+        default="1",
+        help="Comma-separated attack batch sizes. Default: 1",
+    )
+    parser.add_argument(
+        "--attack-iters-grid",
+        default="300,1000",
+        help="Comma-separated AIJack inversion iteration counts. Default: 300,1000",
+    )
+    parser.add_argument(
+        "--num-trials-grid",
+        default="3,5",
+        help="Comma-separated AIJack trial counts. Default: 3,5",
+    )
+    parser.add_argument(
+        "--attack-lrs",
+        default="0.05,0.1",
+        help="Comma-separated attack learning rates. Default: 0.05,0.1",
+    )
+    parser.add_argument(
+        "--distances",
+        default="l2,cossim",
+        help="Comma-separated AIJack distance names. Default: l2,cossim",
+    )
+    parser.add_argument(
+        "--device",
+        default="auto",
+        choices=["auto", "cpu", "cuda", "mps"],
+        help="Device forwarded to the AIJack attack script. Default: auto",
+    )
+    parser.add_argument(
+        "--sweep-name",
+        default=None,
+        help="Name for generated AIJack sweep outputs. Default: timestamped name.",
+    )
+    parser.add_argument(
+        "--max-runs",
+        type=int,
+        default=None,
+        help="Optional cap on AIJack attack cells for quick screening.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Write the AIJack sweep manifest but do not execute attacks.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Re-run AIJack attack cells even if attack_metrics.json already exists.",
     )
     parser.add_argument(
         "--metrics-csv",
@@ -87,6 +192,211 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--random-state", type=int, default=42)
     return parser.parse_args()
+
+
+def parse_int_list(raw: str) -> list[int]:
+    return [int(item.strip()) for item in raw.split(",") if item.strip()]
+
+
+def parse_float_list(raw: str) -> list[float]:
+    return [float(item.strip()) for item in raw.split(",") if item.strip()]
+
+
+def parse_str_list(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def default_experiment_dirs() -> list[Path]:
+    candidates = [
+        Path("results/current/training/bloodmnist/baselines/iid_baseline"),
+        Path("results/current/training/bloodmnist/baselines/noniid_alpha_01"),
+        Path("results/current/training/bloodmnist/baselines/noniid_alpha_05"),
+        Path("results/current/training/bloodmnist/baselines/noniid_alpha_1"),
+    ]
+    return [path for path in candidates if (path / "config.yaml").exists() and (path / "final_model.pt").exists()]
+
+
+def safe_float_token(value: float) -> str:
+    return str(value).replace(".", "p").replace("-", "m")
+
+
+def build_run_id(cell: dict[str, Any]) -> str:
+    return (
+        f"client{cell['client_id']}_sample{cell['sample_index']}_"
+        f"bs{cell['attack_batch_size']}_{cell['distance']}_"
+        f"iters{cell['attack_iters']}_trials{cell['num_trials']}_"
+        f"lr{safe_float_token(float(cell['attack_lr']))}"
+    )
+
+
+def resolve_dataset_overrides(experiment_dirs: list[Path], datasets: list[str]) -> list[str | None]:
+    if not datasets:
+        return [None] * len(experiment_dirs)
+    if len(datasets) == 1:
+        return [datasets[0]] * len(experiment_dirs)
+    if len(datasets) != len(experiment_dirs):
+        raise ValueError(
+            "Pass zero dataset overrides, one override reused for all experiment dirs, "
+            "or one --dataset value per --experiment-dir."
+        )
+    return datasets
+
+
+def build_aijack_sweep_cells(args: argparse.Namespace, sweep_root: Path) -> list[dict[str, Any]]:
+    experiment_dirs = [Path(path) for path in args.experiment_dir] or default_experiment_dirs()
+    if not experiment_dirs:
+        raise SystemExit(
+            "No trained experiment directories found. Pass --experiment-dir pointing "
+            "to a directory with config.yaml and final_model.pt."
+        )
+
+    dataset_overrides = resolve_dataset_overrides(experiment_dirs, args.dataset)
+    clients = parse_int_list(args.clients)
+    sample_indices = parse_int_list(args.sample_indices)
+    batch_sizes = parse_int_list(args.attack_batch_sizes)
+    attack_iters = parse_int_list(args.attack_iters_grid)
+    num_trials = parse_int_list(args.num_trials_grid)
+    attack_lrs = parse_float_list(args.attack_lrs)
+    distances = parse_str_list(args.distances)
+
+    cells: list[dict[str, Any]] = []
+    for experiment_dir, dataset in zip(experiment_dirs, dataset_overrides):
+        experiment_name = experiment_dir.name
+        for client_id, sample_index, batch_size, iters, trials, lr, distance in itertools.product(
+            clients,
+            sample_indices,
+            batch_sizes,
+            attack_iters,
+            num_trials,
+            attack_lrs,
+            distances,
+        ):
+            cell = {
+                "experiment_dir": str(experiment_dir),
+                "experiment_name": experiment_name,
+                "dataset_override": dataset,
+                "client_id": client_id,
+                "sample_index": sample_index,
+                "attack_batch_size": batch_size,
+                "attack_iters": iters,
+                "num_trials": trials,
+                "attack_lr": lr,
+                "distance": distance,
+            }
+            run_id = build_run_id(cell)
+            cell["run_id"] = run_id
+            cell["output_dir"] = str(sweep_root / experiment_name / run_id)
+            cells.append(cell)
+
+    if args.max_runs is not None:
+        cells = cells[: args.max_runs]
+    return cells
+
+
+def run_aijack_sweep(args: argparse.Namespace, output_dir: Path) -> Path:
+    sweep_name = args.sweep_name or datetime.now().strftime("aijack_sweep_%Y%m%d_%H%M%S")
+    sweep_root = output_dir / "aijack_runs" / sweep_name
+    sweep_root.mkdir(parents=True, exist_ok=True)
+
+    cells = build_aijack_sweep_cells(args, sweep_root)
+    manifest_rows: list[dict[str, Any]] = []
+    attack_script = Path(args.aijack_attack_script)
+
+    for index, cell in enumerate(cells, start=1):
+        output_path = Path(cell["output_dir"])
+        metrics_path = output_path / "attack_metrics.json"
+        failed_path = output_path / "attack_failed.json"
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        command = [
+            sys.executable,
+            str(attack_script),
+            "--experiment-dir",
+            cell["experiment_dir"],
+            "--client-id",
+            str(cell["client_id"]),
+            "--sample-index",
+            str(cell["sample_index"]),
+            "--attack-batch-size",
+            str(cell["attack_batch_size"]),
+            "--attack-iters",
+            str(cell["attack_iters"]),
+            "--num-trials",
+            str(cell["num_trials"]),
+            "--attack-lr",
+            str(cell["attack_lr"]),
+            "--distance",
+            str(cell["distance"]),
+            "--device",
+            args.device,
+            "--output-dir",
+            str(output_path),
+        ]
+        if cell["dataset_override"]:
+            command.extend(["--dataset", str(cell["dataset_override"])])
+
+        row = dict(cell)
+        row["command"] = " ".join(command)
+        row["metrics_path"] = str(metrics_path)
+        row["failed_path"] = str(failed_path)
+
+        if metrics_path.exists() and not args.overwrite:
+            row["run_status"] = "skipped_existing"
+            manifest_rows.append(row)
+            continue
+
+        if args.dry_run:
+            row["run_status"] = "dry_run"
+            manifest_rows.append(row)
+            continue
+
+        print(f"[{index}/{len(cells)}] AIJack attack: {cell['experiment_name']} {cell['run_id']}", flush=True)
+        completed = subprocess.run(
+            command,
+            cwd=Path.cwd(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        row["returncode"] = int(completed.returncode)
+        row["stdout_path"] = str(output_path / "stdout.txt")
+        row["stderr_path"] = str(output_path / "stderr.txt")
+        (output_path / "stdout.txt").write_text(completed.stdout, encoding="utf-8")
+        (output_path / "stderr.txt").write_text(completed.stderr, encoding="utf-8")
+
+        if completed.returncode == 0 and metrics_path.exists():
+            row["run_status"] = "ok"
+        else:
+            row["run_status"] = "failed"
+            failure_payload = {
+                **cell,
+                "attack_status": "failed",
+                "attack_error": f"returncode={completed.returncode}",
+                "stdout_path": row["stdout_path"],
+                "stderr_path": row["stderr_path"],
+                "command": command,
+            }
+            with failed_path.open("w", encoding="utf-8") as f:
+                json.dump(failure_payload, f, indent=2)
+
+        manifest_rows.append(row)
+
+    manifest = pd.DataFrame(manifest_rows)
+    manifest.to_csv(sweep_root / "aijack_sweep_manifest.csv", index=False)
+
+    config = {
+        "sweep_root": str(sweep_root),
+        "aijack_attack_script": str(attack_script),
+        "device": args.device,
+        "dry_run": bool(args.dry_run),
+        "overwrite": bool(args.overwrite),
+        "leakage_metric": LEAKAGE_METRIC_DESCRIPTION,
+    }
+    with (sweep_root / "sweep_config.json").open("w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+    print(f"Saved AIJack sweep manifest: {sweep_root / 'aijack_sweep_manifest.csv'}")
+    return sweep_root
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -215,6 +525,9 @@ def coerce_bool(value: Any) -> Any:
 def normalize_table(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
+
+    if "reconstruction_mse" not in df.columns:
+        df["reconstruction_mse"] = np.nan
 
     for col in [
         "reconstruction_mse",
@@ -509,7 +822,10 @@ def matched_contrasts(
             }
         )
 
-    return pd.DataFrame(rows).sort_values(
+    result = pd.DataFrame(rows)
+    if result.empty:
+        return result
+    return result.sort_values(
         ["n_matched_contrasts", "mean_abs_delta_leakage_score"],
         ascending=[False, False],
     )
@@ -526,7 +842,10 @@ def spearman_screening(df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
             continue
         corr = sub[col].corr(sub["leakage_score"], method="spearman")
         rows.append({"parameter": col, "n": int(len(sub)), "spearman_with_leakage_score": float(corr)})
-    return pd.DataFrame(rows).sort_values("spearman_with_leakage_score", key=lambda s: s.abs(), ascending=False)
+    result = pd.DataFrame(rows)
+    if result.empty:
+        return result
+    return result.sort_values("spearman_with_leakage_score", key=lambda s: s.abs(), ascending=False)
 
 
 def save_plots(output_dir: Path, importance: pd.DataFrame, contrasts: pd.DataFrame) -> None:
@@ -635,11 +954,23 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.run_aijack_sweep and args.analysis_only:
+        raise SystemExit("Use either --run-aijack-sweep or --analysis-only, not both.")
+
+    generated_sweep_root = None
+    if args.run_aijack_sweep:
+        generated_sweep_root = run_aijack_sweep(args, output_dir)
+        if args.dry_run and not args.metrics_csv and not args.search_root and not args.include_archive:
+            print("Dry run complete; no analysis was run because no metrics were generated.")
+            return
+
     csv_paths = [Path(path) for path in args.metrics_csv]
-    if not csv_paths and Path(DEFAULT_MATRIX_CSV).exists():
+    if not args.run_aijack_sweep and not csv_paths and Path(DEFAULT_MATRIX_CSV).exists():
         csv_paths = [Path(DEFAULT_MATRIX_CSV)]
 
     search_roots = [Path(path) for path in args.search_root]
+    if generated_sweep_root is not None:
+        search_roots.append(generated_sweep_root)
     if args.include_archive:
         search_roots.append(Path("results/_archive_low_value_20260516/individual_attack_outputs"))
 
