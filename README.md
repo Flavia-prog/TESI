@@ -21,7 +21,7 @@ Thin CLI wrappers are available in `scripts/`:
 - `python scripts/run_attack.py --experiment-dir ...`
 - `python scripts/run_sweep.py --config ...`
 
-The goal is to study how to build federated learning models while balancing utility and privacy. The current stage focuses on building reproducible FedAvg baselines under IID and non-IID client data distributions.
+The goal is to study how to build federated learning models while balancing utility and privacy. 
 
 Legacy standalone scripts (for backward compatibility) still exist in `scripts/`, but the package wrappers above are the recommended entry points.
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import itertools
 import json
 import re
 import subprocess
@@ -34,6 +35,21 @@ DEFAULT_EXPERIMENT_DIRS = [
     "results/noniid_alpha_05",
     "results/noniid_alpha_01",
 ]
+
+DESIGN_FEATURES = [
+    "experiment_dir",
+    "distance",
+    # attack_batch_size changes how many target samples/gradients are inverted jointly.
+    # In gradient inversion this can materially change leakage quality and difficulty.
+    "attack_batch_size",
+    "attack_iters",
+    "num_trials",
+    "attack_lr",
+    "client_id",
+    "sample_index",
+]
+
+BALANCED_SCREENING_DEFAULT_MAX_RUNS = 128
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,7 +92,42 @@ def parse_args() -> argparse.Namespace:
         choices=available_model_arches(),
         help="Optional model architecture override for every run.",
     )
-
+    parser.add_argument(
+        "--design",
+        choices=["full_factorial", "balanced_screening"],
+        default="full_factorial",
+        help=(
+            "Design used to select attack runs. "
+            "'full_factorial' keeps all combinations (optionally capped by --max-runs). "
+            "'balanced_screening' builds a deterministic, capped subset for laptop-scale screening."
+        ),
+    )
+    parser.add_argument(
+        "--design-seed",
+        type=int,
+        default=42,
+        help="Random seed used for deterministic balanced_screening selection.",
+    )
+    parser.add_argument(
+        "--ensure-varies",
+        nargs="+",
+        default=[],
+        choices=DESIGN_FEATURES,
+        help=(
+            "Parameters that should vary in the selected design when possible. "
+            "Warnings are emitted if fewer than 2 unique values are selected."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run-design",
+        action="store_true",
+        help="Build and report the design without running attacks.",
+    )
+    parser.add_argument(
+        "--save-design-csv",
+        action="store_true",
+        help="Save selected design combinations as design_selected_runs.csv.",
+    )
     parser.add_argument(
         "--target-metric",
         choices=["best_mse", "best_ssim"],
@@ -97,7 +148,10 @@ def parse_args() -> argparse.Namespace:
         "--max-runs",
         type=int,
         default=None,
-        help="Optional cap for debugging/pilot runs.",
+        help=(
+            "Optional cap on selected runs. In balanced_screening this cap is applied "
+            "after coverage-aware subset selection."
+        ),
     )
     parser.add_argument(
         "--jobs",
@@ -171,6 +225,257 @@ def build_attack_run_dir(
         f"client{client_id}_sample{sample_index}"
     )
     return experiment_dir / "attacks" / run_name
+
+
+def as_jsonable_value(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def unique_sorted(values: list[Any]) -> list[Any]:
+    values_json = [as_jsonable_value(value) for value in values]
+    seen = []
+    seen_keys = set()
+    for value in values_json:
+        key = json.dumps(value, sort_keys=True)
+        if key not in seen_keys:
+            seen.append(value)
+            seen_keys.add(key)
+    return sorted(seen, key=lambda item: str(item))
+
+
+def combo_to_row(combo: dict[str, Any]) -> dict[str, Any]:
+    row = {}
+    for key, value in combo.items():
+        row[key] = str(value) if isinstance(value, Path) else value
+    return row
+
+
+def build_full_factorial_combos(
+    args: argparse.Namespace,
+    sweep_name: str,
+) -> list[dict[str, Any]]:
+    combos: list[dict[str, Any]] = []
+    for (
+        experiment,
+        client_id,
+        sample_index,
+        attack_batch_size,
+        attack_iters,
+        num_trials,
+        attack_lr,
+        distance,
+    ) in itertools.product(
+        args.experiment_dirs,
+        args.client_ids,
+        args.sample_indices,
+        args.attack_batch_sizes,
+        args.attack_iters,
+        args.num_trials,
+        args.attack_lrs,
+        args.distances,
+    ):
+        experiment_dir = Path(experiment)
+        run_dir = build_attack_run_dir(
+            experiment_dir=experiment_dir,
+            sweep_name=sweep_name,
+            client_id=client_id,
+            sample_index=sample_index,
+            attack_batch_size=attack_batch_size,
+            attack_iters=attack_iters,
+            num_trials=num_trials,
+            attack_lr=attack_lr,
+            distance=distance,
+        )
+        combos.append(
+            {
+                "experiment_dir": experiment_dir,
+                "run_dir": run_dir,
+                "client_id": client_id,
+                "sample_index": sample_index,
+                "attack_batch_size": attack_batch_size,
+                "attack_iters": attack_iters,
+                "num_trials": num_trials,
+                "attack_lr": attack_lr,
+                "distance": distance,
+            }
+        )
+    return combos
+
+
+def select_balanced_subset(
+    combos: list[dict[str, Any]],
+    max_runs: int,
+    seed: int,
+    ensure_varies: list[str],
+) -> list[dict[str, Any]]:
+    if max_runs >= len(combos):
+        return list(combos)
+    if max_runs < 1:
+        return []
+
+    rng = np.random.default_rng(seed)
+    indices = np.arange(len(combos))
+    rng.shuffle(indices)
+    randomized_combos = [combos[idx] for idx in indices]
+
+    available_unique = {
+        feature: len(unique_sorted([combo[feature] for combo in randomized_combos]))
+        for feature in DESIGN_FEATURES
+    }
+    required_n_unique = {
+        feature: min(2, available_unique[feature]) for feature in ensure_varies
+    }
+
+    selected: list[dict[str, Any]] = []
+    remaining = list(range(len(randomized_combos)))
+    value_counts = {
+        feature: {}
+        for feature in DESIGN_FEATURES
+    }
+    selected_unique = {feature: set() for feature in DESIGN_FEATURES}
+
+    while remaining and len(selected) < max_runs:
+        best_idx = None
+        best_score = None
+
+        for candidate_idx in remaining:
+            candidate = randomized_combos[candidate_idx]
+            score = 0.0
+
+            for feature in DESIGN_FEATURES:
+                value = as_jsonable_value(candidate[feature])
+                count = value_counts[feature].get(value, 0)
+                score += 1.0 / (1.0 + count)
+
+                if feature in required_n_unique:
+                    current_unique = len(selected_unique[feature])
+                    if current_unique < required_n_unique[feature] and value not in selected_unique[feature]:
+                        score += 5.0
+
+            score += float(rng.uniform(0.0, 1e-6))
+
+            if best_score is None or score > best_score:
+                best_score = score
+                best_idx = candidate_idx
+
+        if best_idx is None:
+            break
+
+        chosen = randomized_combos[best_idx]
+        selected.append(chosen)
+        remaining.remove(best_idx)
+
+        for feature in DESIGN_FEATURES:
+            value = as_jsonable_value(chosen[feature])
+            value_counts[feature][value] = value_counts[feature].get(value, 0) + 1
+            selected_unique[feature].add(value)
+
+    return selected
+
+
+def build_design_report(
+    full_combos: list[dict[str, Any]],
+    selected_combos: list[dict[str, Any]],
+    design: str,
+    ensure_varies: list[str],
+    design_seed: int,
+    max_runs: int | None,
+) -> dict[str, Any]:
+    parameters = {}
+    warnings = []
+    assessable_parameters = []
+    constant_parameters = []
+
+    for feature in DESIGN_FEATURES:
+        full_values = unique_sorted([combo[feature] for combo in full_combos])
+        selected_values = unique_sorted([combo[feature] for combo in selected_combos])
+        n_selected_unique = len(selected_values)
+        assessable = n_selected_unique >= 2
+
+        if assessable:
+            assessable_parameters.append(feature)
+        else:
+            constant_parameters.append(feature)
+            if feature == "experiment_dir":
+                warnings.append(
+                    "Parameter 'experiment_dir' is constant in selected design, so train split/alpha context may be underrepresented."
+                )
+            else:
+                warnings.append(
+                    f"Parameter '{feature}' is constant in selected design and will be dropped from feature-importance analysis."
+                )
+
+        if feature in ensure_varies and n_selected_unique < 2:
+            warnings.append(
+                f"Requested ensure-varies parameter '{feature}' has only {n_selected_unique} unique value(s) in the selected design."
+            )
+
+        parameters[feature] = {
+            "n_unique_full_factorial": len(full_values),
+            "values_full_factorial": full_values,
+            "n_unique_selected": n_selected_unique,
+            "values_selected": selected_values,
+            "assessable_by_feature_importance": assessable,
+        }
+
+    report = {
+        "design": design,
+        "design_seed": design_seed,
+        "max_runs_requested": max_runs,
+        "n_total_full_factorial_combinations": len(full_combos),
+        "n_selected_combinations": len(selected_combos),
+        "ensure_varies": ensure_varies,
+        "assessable_parameters": assessable_parameters,
+        "constant_parameters": constant_parameters,
+        "parameters": parameters,
+        "warnings": warnings,
+    }
+    return report
+
+
+def build_selected_combos(
+    args: argparse.Namespace,
+    sweep_name: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int | None]:
+    full_combos = build_full_factorial_combos(args, sweep_name=sweep_name)
+    requested_max_runs = args.max_runs
+
+    if args.design == "full_factorial":
+        selected_combos = full_combos
+        if requested_max_runs is not None:
+            selected_combos = selected_combos[:requested_max_runs]
+        return full_combos, selected_combos, requested_max_runs
+
+    design_cap = requested_max_runs
+    if design_cap is None:
+        design_cap = min(BALANCED_SCREENING_DEFAULT_MAX_RUNS, len(full_combos))
+
+    selected_combos = select_balanced_subset(
+        combos=full_combos,
+        max_runs=design_cap,
+        seed=args.design_seed,
+        ensure_varies=args.ensure_varies,
+    )
+    return full_combos, selected_combos, design_cap
+
+
+def select_device(requested_device: str) -> str:
+    if requested_device == "auto":
+        if torch.backends.mps.is_available():
+            return "mps"
+        if torch.cuda.is_available():
+            return "cuda"
+        return "cpu"
+
+    if requested_device == "mps" and not torch.backends.mps.is_available():
+        raise ValueError("Requested --device mps, but MPS is not available in this PyTorch environment.")
+
+    if requested_device == "cuda" and not torch.cuda.is_available():
+        raise ValueError("Requested --device cuda, but CUDA is not available in this environment.")
+
+    return requested_device
 
 
 def denormalize(x: torch.Tensor) -> torch.Tensor:
@@ -475,6 +780,8 @@ def prepare_regression_data(
     df: pd.DataFrame,
     target_metric: str,
 ) -> tuple[pd.DataFrame, pd.Series, list[str], list[str]]:
+    # Feature-importance from regression can only evaluate parameters that vary in the
+    # selected sweep. A constant column provides no split/permutation signal and must be dropped.
     feature_columns = [
         "attack_batch_size",
         "attack_iters",
@@ -599,6 +906,22 @@ def main() -> None:
     args = parse_args()
     if args.jobs < 1:
         raise ValueError("--jobs must be >= 1.")
+    if args.max_runs is not None and args.max_runs < 1:
+        raise ValueError("--max-runs must be >= 1 when provided.")
+    if args.analysis_only and args.dry_run_design:
+        raise ValueError("--dry-run-design cannot be combined with --analysis-only.")
+    if args.jobs > 2:
+        print(
+            "WARNING: --jobs > 2 may be memory-heavy on a laptop. "
+            "For MacBook Air class hardware, --jobs 1 or 2 is usually safer."
+        )
+
+    resolved_device = select_device(args.device)
+    if resolved_device == "mps":
+        print(
+            "WARNING: Using MPS. Depending on AIJack/PyTorch operators, MPS may or may not "
+            "improve runtime versus CPU."
+        )
 
     attack_script_path = Path(args.attack_script)
     if not attack_script_path.is_absolute():
@@ -617,52 +940,70 @@ def main() -> None:
 
     analysis_dir = output_root / sweep_name
     analysis_dir.mkdir(parents=True, exist_ok=True)
+    design_report_path = analysis_dir / "design_report.json"
+    design_csv_path = analysis_dir / "design_selected_runs.csv"
 
-    combos = []
+    full_combos: list[dict[str, Any]] = []
+    selected_combos: list[dict[str, Any]] = []
+    design_cap_used: int | None = None
+    design_report: dict[str, Any] | None = None
+    run_records: list[dict[str, Any]] = []
+    current_run_dirs: list[Path] = []
 
-    for experiment in args.experiment_dirs:
-        experiment_dir = Path(experiment)
-        for client_id in args.client_ids:
-            for sample_index in args.sample_indices:
-                for attack_batch_size in args.attack_batch_sizes:
-                    for attack_iters in args.attack_iters:
-                        for num_trials in args.num_trials:
-                            for attack_lr in args.attack_lrs:
-                                for distance in args.distances:
-                                    run_dir = build_attack_run_dir(
-                                        experiment_dir=experiment_dir,
-                                        sweep_name=sweep_name,
-                                        client_id=client_id,
-                                        sample_index=sample_index,
-                                        attack_batch_size=attack_batch_size,
-                                        attack_iters=attack_iters,
-                                        num_trials=num_trials,
-                                        attack_lr=attack_lr,
-                                        distance=distance,
-                                    )
-                                    combos.append(
-                                        {
-                                            "experiment_dir": experiment_dir,
-                                            "run_dir": run_dir,
-                                            "client_id": client_id,
-                                            "sample_index": sample_index,
-                                            "attack_batch_size": attack_batch_size,
-                                            "attack_iters": attack_iters,
-                                            "num_trials": num_trials,
-                                            "attack_lr": attack_lr,
-                                            "distance": distance,
-                                        }
-                                    )
+    if not args.analysis_only:
+        full_combos, selected_combos, design_cap_used = build_selected_combos(
+            args,
+            sweep_name=sweep_name,
+        )
+        if not selected_combos:
+            raise ValueError("No design combinations selected. Check --max-runs and design settings.")
 
-    if args.max_runs is not None:
-        combos = combos[: args.max_runs]
+        design_report = build_design_report(
+            full_combos=full_combos,
+            selected_combos=selected_combos,
+            design=args.design,
+            ensure_varies=args.ensure_varies,
+            design_seed=args.design_seed,
+            max_runs=design_cap_used,
+        )
+        with design_report_path.open("w", encoding="utf-8") as f:
+            json.dump(design_report, f, indent=2)
 
-    run_records = []
-    current_run_dirs = [combo["run_dir"] for combo in combos]
+        if args.save_design_csv:
+            pd.DataFrame([combo_to_row(combo) for combo in selected_combos]).to_csv(
+                design_csv_path,
+                index=False,
+            )
+
+        print("\nDesign preflight report:")
+        print(
+            f"- full-factorial combinations: {design_report['n_total_full_factorial_combinations']}"
+        )
+        print(f"- selected combinations: {design_report['n_selected_combinations']}")
+        print(f"- report path: {design_report_path.resolve()}")
+        for feature in DESIGN_FEATURES:
+            feature_info = design_report["parameters"][feature]
+            print(
+                f"  - {feature}: n_unique={feature_info['n_unique_selected']}, "
+                f"values={feature_info['values_selected']}, "
+                f"assessable={feature_info['assessable_by_feature_importance']}"
+            )
+
+        if args.save_design_csv:
+            print(f"- design csv: {design_csv_path.resolve()}")
+
+        for warning in design_report["warnings"]:
+            print(f"WARNING: {warning}")
+
+        if args.dry_run_design:
+            print("\nDry-run complete. No attacks were executed.")
+            return
+
+        current_run_dirs = [combo["run_dir"] for combo in selected_combos]
 
     if not args.analysis_only:
         combos_to_run = []
-        for combo in combos:
+        for combo in selected_combos:
             run_dir = combo["run_dir"]
             metrics_path = run_dir / "attack_metrics.json"
             if metrics_path.exists() and not args.rerun_existing:
@@ -690,7 +1031,7 @@ def main() -> None:
                 num_trials=combo["num_trials"],
                 attack_lr=combo["attack_lr"],
                 distance=combo["distance"],
-                device=args.device,
+                device=resolved_device,
                 dataset_override=args.dataset,
                 model_arch_override=args.model_arch,
             )
@@ -830,6 +1171,8 @@ def main() -> None:
         "timestamp": run_stamp,
         "sweep_name": sweep_name,
         "analysis_dir": str(analysis_dir.resolve()),
+        "design": args.design,
+        "design_report_path": str(design_report_path.resolve()) if design_report_path.exists() else None,
         "target_metric": args.target_metric,
         "execution_mode": args.execution_mode,
         "dataset_override": args.dataset,
@@ -843,7 +1186,12 @@ def main() -> None:
         "test_mae": test_mae,
         "regression_warning": regression_warning,
         "top_parameters": top_rows.to_dict(orient="records"),
+        "permutation_importance_scope_note": (
+            "Permutation importance is only defined for parameters that varied in the selected sweep."
+        ),
         "important_note": (
+            # This remains screening-oriented: observational sweeps can rank sensitivity,
+            # but they do not establish causal effects without controlled causal design.
             "This analysis is exploratory and should be used for parameter screening, "
             "not causal proof."
         ),
@@ -870,6 +1218,9 @@ def main() -> None:
 
     if run_records:
         print(f"Run manifest: {(analysis_dir / 'run_manifest.csv').resolve()}")
+
+    if design_report_path.exists():
+        print(f"Design report: {design_report_path.resolve()}")
 
     print(f"Parameter importance: {importance_path.resolve()}")
     print(f"Summary: {summary_path.resolve()}")
