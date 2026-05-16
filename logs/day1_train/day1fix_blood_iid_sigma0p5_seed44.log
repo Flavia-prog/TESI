@@ -1,0 +1,149 @@
+Using device: cpu
+Starting AIJack FedAvg + DP BloodMNIST | clients=5, rounds=20, local_epochs=1, batch_size=64, lr=0.01, split=iid, alpha=0.5, optimizer=SGD, dp_enabled=True, clip_norm=1.0, noise_multiplier=0.5, dp_noise_std=None, effective_noise_multiplier=0.5, actual_noise_std=0.5, delta=1e-05
+communication 0, epoch 0: client-1 0.032234687358140945
+communication 0, epoch 0: client-2 0.03206479904197511
+communication 0, epoch 0: client-3 0.032116814671705164
+communication 0, epoch 0: client-4 0.03221110664308071
+communication 0, epoch 0: client-5 0.032446473836898804
+Round 001/20 | val_loss: 2.0602 | val_acc: 0.0935 | val_macro_f1: 0.0247 | non_finite_batches: 0
+communication 1, epoch 0: client-1 0.03215682800663145
+communication 1, epoch 0: client-2 0.031643920267621674
+communication 1, epoch 0: client-3 0.03169746646149592
+communication 1, epoch 0: client-4 0.03182423624553179
+communication 1, epoch 0: client-5 0.03181416106720766
+Round 002/20 | val_loss: 2.0261 | val_acc: 0.2190 | val_macro_f1: 0.0808 | non_finite_batches: 0
+communication 2, epoch 0: client-1 0.03147677261204947
+communication 2, epoch 0: client-2 0.031711376085877416
+communication 2, epoch 0: client-3 0.03115226353772662
+communication 2, epoch 0: client-4 0.03103441817479001
+communication 2, epoch 0: client-5 0.03151890984736383
+Round 003/20 | val_loss: 1.9976 | val_acc: 0.2407 | val_macro_f1: 0.0891 | non_finite_batches: 0
+communication 3, epoch 0: client-1 0.0313406611004701
+communication 3, epoch 0: client-2 0.03092587273567915
+communication 3, epoch 0: client-3 0.030993916948015492
+communication 3, epoch 0: client-4 0.030798898078501225
+communication 3, epoch 0: client-5 0.03080619415268302
+Round 004/20 | val_loss: 1.9805 | val_acc: 0.2225 | val_macro_f1: 0.0825 | non_finite_batches: 0
+communication 4, epoch 0: client-1 0.031128728677603332
+communication 4, epoch 0: client-2 0.031142701340072295
+communication 4, epoch 0: client-3 0.03058372702645628
+communication 4, epoch 0: client-4 0.030649005062878133
+communication 4, epoch 0: client-5 0.030858042587836584
+Round 005/20 | val_loss: 1.9479 | val_acc: 0.2249 | val_macro_f1: 0.0840 | non_finite_batches: 0
+communication 5, epoch 0: client-1 0.0309513745829463
+communication 5, epoch 0: client-2 0.029897293642811153
+communication 5, epoch 0: client-3 0.030507606640458106
+communication 5, epoch 0: client-4 0.029984614346176386
+communication 5, epoch 0: client-5 0.030337057838385754
+Round 006/20 | val_loss: 1.9251 | val_acc: 0.2436 | val_macro_f1: 0.1094 | non_finite_batches: 0
+communication 6, epoch 0: client-1 0.030553066445624128
+communication 6, epoch 0: client-2 0.030010957270860672
+communication 6, epoch 0: client-3 0.029988686088472605
+communication 6, epoch 0: client-4 0.030028159645470707
+communication 6, epoch 0: client-5 0.029691147804260253
+Round 007/20 | val_loss: 1.8989 | val_acc: 0.3867 | val_macro_f1: 0.2491 | non_finite_batches: 0
+communication 7, epoch 0: client-1 0.029512722260103777
+communication 7, epoch 0: client-2 0.029532744735479354
+communication 7, epoch 0: client-3 0.029472248007853825
+communication 7, epoch 0: client-4 0.029811158598888488
+communication 7, epoch 0: client-5 0.02917167121036486
+Round 008/20 | val_loss: 1.8535 | val_acc: 0.4089 | val_macro_f1: 0.2514 | non_finite_batches: 0
+communication 8, epoch 0: client-1 0.028936331781248253
+communication 8, epoch 0: client-2 0.028715334925800563
+communication 8, epoch 0: client-3 0.029092074061433475
+communication 8, epoch 0: client-4 0.02865960542112589
+communication 8, epoch 0: client-5 0.02879569150115314
+Round 009/20 | val_loss: 1.7968 | val_acc: 0.4387 | val_macro_f1: 0.2794 | non_finite_batches: 0
+communication 9, epoch 0: client-1 0.02800933801029858
+communication 9, epoch 0: client-2 0.027576693382702376
+communication 9, epoch 0: client-3 0.027755173166161
+communication 9, epoch 0: client-4 0.027754526366205776
+communication 9, epoch 0: client-5 0.028149069170467556
+Round 010/20 | val_loss: 1.7442 | val_acc: 0.4866 | val_macro_f1: 0.3009 | non_finite_batches: 0
+communication 10, epoch 0: client-1 0.02747830459848046
+communication 10, epoch 0: client-2 0.02743987465167747
+communication 10, epoch 0: client-3 0.027436278541298473
+communication 10, epoch 0: client-4 0.027651620358228685
+communication 10, epoch 0: client-5 0.026664873119443655
+Round 011/20 | val_loss: 1.6860 | val_acc: 0.4597 | val_macro_f1: 0.2823 | non_finite_batches: 0
+communication 11, epoch 0: client-1 0.027203726395964623
+communication 11, epoch 0: client-2 0.02648072983873518
+communication 11, epoch 0: client-3 0.026477194892672393
+communication 11, epoch 0: client-4 0.027175424413548574
+communication 11, epoch 0: client-5 0.026460817859818537
+Round 012/20 | val_loss: 1.6774 | val_acc: 0.4124 | val_macro_f1: 0.2565 | non_finite_batches: 0
+communication 12, epoch 0: client-1 0.026914604895171664
+communication 12, epoch 0: client-2 0.02601739941164851
+communication 12, epoch 0: client-3 0.026290271039071837
+communication 12, epoch 0: client-4 0.026614393148085346
+communication 12, epoch 0: client-5 0.025199163350320998
+Round 013/20 | val_loss: 1.6412 | val_acc: 0.4936 | val_macro_f1: 0.3026 | non_finite_batches: 0
+communication 13, epoch 0: client-1 0.026620356660140187
+communication 13, epoch 0: client-2 0.025540795975497792
+communication 13, epoch 0: client-3 0.02589868096744313
+communication 13, epoch 0: client-4 0.025878004264086485
+communication 13, epoch 0: client-5 0.025054412406115306
+Round 014/20 | val_loss: 1.5779 | val_acc: 0.4737 | val_macro_f1: 0.2871 | non_finite_batches: 0
+communication 14, epoch 0: client-1 0.02520608063787222
+communication 14, epoch 0: client-2 0.025306194682012905
+communication 14, epoch 0: client-3 0.024605064229531723
+communication 14, epoch 0: client-4 0.02507388973608613
+communication 14, epoch 0: client-5 0.024504503563922996
+Round 015/20 | val_loss: 1.5212 | val_acc: 0.4772 | val_macro_f1: 0.3008 | non_finite_batches: 0
+communication 15, epoch 0: client-1 0.024660721929235893
+communication 15, epoch 0: client-2 0.024282765202224256
+communication 15, epoch 0: client-3 0.023913060935835045
+communication 15, epoch 0: client-4 0.023367262817919253
+communication 15, epoch 0: client-5 0.023564306902699172
+Round 016/20 | val_loss: 1.4888 | val_acc: 0.4854 | val_macro_f1: 0.3026 | non_finite_batches: 0
+communication 16, epoch 0: client-1 0.02394987177103758
+communication 16, epoch 0: client-2 0.02325344504788518
+communication 16, epoch 0: client-3 0.023521132848185043
+communication 16, epoch 0: client-4 0.023532384810479062
+communication 16, epoch 0: client-5 0.02274714959785342
+Round 017/20 | val_loss: 1.4567 | val_acc: 0.4918 | val_macro_f1: 0.3200 | non_finite_batches: 0
+communication 17, epoch 0: client-1 0.023519264957444233
+communication 17, epoch 0: client-2 0.02268267956308343
+communication 17, epoch 0: client-3 0.02190241828146908
+communication 17, epoch 0: client-4 0.024159384793356845
+communication 17, epoch 0: client-5 0.02220421750098467
+Round 018/20 | val_loss: 1.4185 | val_acc: 0.5029 | val_macro_f1: 0.3169 | non_finite_batches: 0
+communication 18, epoch 0: client-1 0.023262941223733565
+communication 18, epoch 0: client-2 0.02278100436224657
+communication 18, epoch 0: client-3 0.022532218787819146
+communication 18, epoch 0: client-4 0.021839072182774543
+communication 18, epoch 0: client-5 0.023015440092422068
+Round 019/20 | val_loss: 1.4276 | val_acc: 0.4942 | val_macro_f1: 0.3253 | non_finite_batches: 0
+communication 19, epoch 0: client-1 0.02184406854212284
+communication 19, epoch 0: client-2 0.02206455102484477
+communication 19, epoch 0: client-3 0.02307399765898784
+communication 19, epoch 0: client-4 0.021926049231773333
+communication 19, epoch 0: client-5 0.021467531720797222
+Round 020/20 | val_loss: 1.3845 | val_acc: 0.4965 | val_macro_f1: 0.3816 | non_finite_batches: 0
+
+Final test evaluation:
+Best round: 20
+Best validation loss: 1.3845
+Test loss: 1.3923
+Test accuracy: 0.4911
+Test macro-F1: 0.3702
+Test non-finite batches: 0
+DP epsilon: 90.12663110385034
+DP delta: 1e-05
+DP sampling rate: 1.0
+Privacy accountant: AIJack GeneralMomentAccountant
+Test F1 class 0: 0.0000 (basophil)
+Test F1 class 1: 0.4361 (eosinophil)
+Test F1 class 2: 0.2909 (erythroblast)
+Test F1 class 3: 0.4417 (immature granulocytes(myelocytes, metamyelocytes and promyelocytes))
+Test F1 class 4: 0.3323 (lymphocyte)
+Test F1 class 5: 0.0000 (monocyte)
+Test F1 class 6: 0.6238 (neutrophil)
+Test F1 class 7: 0.8370 (platelet)
+
+Saved config to: results/day1fix_blood_iid_sigma0p5_seed44/config.yaml
+Saved history to: results/day1fix_blood_iid_sigma0p5_seed44/history.csv
+Saved test metrics to: results/day1fix_blood_iid_sigma0p5_seed44/test_metrics.csv
+Saved client distributions to: results/day1fix_blood_iid_sigma0p5_seed44/client_distributions.csv
+Saved final model to: results/day1fix_blood_iid_sigma0p5_seed44/final_model.pt
+Saved confusion matrix to: results/day1fix_blood_iid_sigma0p5_seed44/confusion_matrix.png

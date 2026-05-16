@@ -36,7 +36,13 @@ def parse_args() -> argparse.Namespace:
         "--extra-ssim-dir",
         type=str,
         default=None,
-        help="Optional SSIM analysis directory for an additional dataset sweep.",
+        help="Optional single SSIM analysis directory for one additional dataset sweep.",
+    )
+    parser.add_argument(
+        "--extra-ssim-dirs",
+        nargs="+",
+        default=None,
+        help="Optional list of SSIM analysis directories for additional dataset sweeps.",
     )
     parser.add_argument(
         "--primary-label",
@@ -48,7 +54,13 @@ def parse_args() -> argparse.Namespace:
         "--extra-label",
         type=str,
         default="PathMNIST",
-        help="Label for extra SSIM sweep in cross-dataset plot.",
+        help="Label for --extra-ssim-dir.",
+    )
+    parser.add_argument(
+        "--extra-labels",
+        nargs="+",
+        default=None,
+        help="Optional labels for --extra-ssim-dirs (same length).",
     )
     return parser.parse_args()
 
@@ -84,99 +96,113 @@ def build_mse_importance_plot(parameter_importance_csv: Path, out_fig_base: Path
     save_fig(fig, out_fig_base)
 
 
+def _load_rank_df(param_csv: Path, label: str) -> pd.DataFrame:
+    df = pd.read_csv(param_csv).sort_values("importance_mean_mae_increase", ascending=False).reset_index(drop=True)
+    return pd.DataFrame(
+        {
+            "parameter": df["parameter"].astype(str),
+            "rank": (df.index + 1).astype(int),
+            "dataset_label": label,
+        }
+    )
+
+
+def _slugify(text: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "_" for ch in text).strip("_")
+
+
 def build_cross_dataset_rank_plot(
     primary_param_csv: Path,
-    extra_param_csv: Path,
     primary_label: str,
-    extra_label: str,
+    extra_param_csvs: list[Path],
+    extra_labels: list[str],
     out_fig_base: Path,
 ) -> None:
-    primary_df = pd.read_csv(primary_param_csv).sort_values(
-        "importance_mean_mae_increase",
-        ascending=False,
-    )
-    extra_df = pd.read_csv(extra_param_csv).sort_values(
-        "importance_mean_mae_increase",
-        ascending=False,
-    )
+    if len(extra_param_csvs) != len(extra_labels):
+        raise ValueError("extra_param_csvs and extra_labels must have the same length.")
+    if not extra_param_csvs:
+        return
 
-    primary_df = primary_df.reset_index(drop=True)
-    extra_df = extra_df.reset_index(drop=True)
-    primary_df["rank_primary"] = primary_df.index + 1
-    extra_df["rank_extra"] = extra_df.index + 1
+    all_dfs = [_load_rank_df(primary_param_csv, primary_label)]
+    for csv_path, label in zip(extra_param_csvs, extra_labels):
+        all_dfs.append(_load_rank_df(csv_path, label))
 
-    merged = primary_df[["parameter", "rank_primary"]].merge(
-        extra_df[["parameter", "rank_extra"]],
-        on="parameter",
-        how="inner",
-    )
+    common_params = set(all_dfs[0]["parameter"].tolist())
+    for df in all_dfs[1:]:
+        common_params &= set(df["parameter"].tolist())
+    if not common_params:
+        raise ValueError("No overlapping parameters across datasets for cross-dataset rank plot.")
 
-    if merged.empty:
-        raise ValueError("No overlapping parameters between primary and extra sweeps.")
+    primary_sorted = all_dfs[0][all_dfs[0]["parameter"].isin(common_params)].sort_values("rank")
+    top_params = primary_sorted.head(12)["parameter"].tolist()
 
-    merged = merged.sort_values("rank_primary").head(12).iloc[::-1].reset_index(drop=True)
-    merged["y"] = merged.index.astype(float)
+    rows = []
+    for df in all_dfs:
+        part = df[df["parameter"].isin(top_params)].copy()
+        part["parameter"] = pd.Categorical(part["parameter"], categories=top_params, ordered=True)
+        rows.append(part)
+    plot_df = pd.concat(rows, ignore_index=True)
 
-    # Separate fully overlapping points so both datasets remain visible.
-    tie_mask = merged["rank_primary"] == merged["rank_extra"]
-    tie_offset = 0.09
-    merged["rank_primary_plot"] = merged["rank_primary"] - tie_mask.astype(float) * tie_offset
-    merged["rank_extra_plot"] = merged["rank_extra"] + tie_mask.astype(float) * tie_offset
+    y_order = top_params[::-1]
+    y_map = {p: i for i, p in enumerate(y_order)}
+    plot_df["y"] = plot_df["parameter"].astype(str).map(y_map).astype(float)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    for _, row in merged.iterrows():
-        ax.plot(
-            [row["rank_primary"], row["rank_extra"]],
-            [row["y"], row["y"]],
-            color="#9aa0a6",
-            linewidth=1.2,
-            alpha=0.8,
+    labels_in_order = [primary_label] + extra_labels
+    offset_span = 0.26
+    if len(labels_in_order) == 1:
+        offsets = {labels_in_order[0]: 0.0}
+    else:
+        raw = [
+            (-offset_span / 2.0) + i * (offset_span / (len(labels_in_order) - 1))
+            for i in range(len(labels_in_order))
+        ]
+        offsets = dict(zip(labels_in_order, raw))
+    plot_df["rank_plot"] = plot_df["rank"] + plot_df["dataset_label"].map(offsets).astype(float)
+
+    fig, ax = plt.subplots(figsize=(11, 6.5))
+
+    for _, grp in plot_df.groupby("parameter"):
+        x_min = grp["rank"].min()
+        x_max = grp["rank"].max()
+        y = grp["y"].iloc[0]
+        ax.plot([x_min, x_max], [y, y], color="#9aa0a6", linewidth=1.2, alpha=0.75, zorder=1)
+
+    colors = list(plt.cm.tab10.colors)
+    markers = ["o", "D", "s", "^", "P", "X", "v", "*"]
+    for i, label in enumerate(labels_in_order):
+        grp = plot_df[plot_df["dataset_label"] == label]
+        ax.scatter(
+            grp["rank_plot"],
+            grp["y"],
+            color=colors[i % len(colors)],
+            marker=markers[i % len(markers)],
+            s=60,
+            label=label,
+            edgecolors="white",
+            linewidths=0.8,
+            zorder=3,
         )
 
-    ax.scatter(
-        merged["rank_primary_plot"],
-        merged["y"],
-        color="#1f77b4",
-        marker="o",
-        s=52,
-        label=primary_label,
-        edgecolors="white",
-        linewidths=0.8,
-        zorder=3,
-    )
-    ax.scatter(
-        merged["rank_extra_plot"],
-        merged["y"],
-        color="#ff7f0e",
-        marker="D",
-        s=52,
-        label=extra_label,
-        edgecolors="white",
-        linewidths=0.8,
-        zorder=3,
-    )
-
-    max_rank = int(max(merged["rank_primary"].max(), merged["rank_extra"].max()))
+    max_rank = int(plot_df["rank"].max())
     ax.set_xlim(0.5, max_rank + 0.5)
     ax.invert_xaxis()
-    ax.set_yticks(merged["y"])
-    ax.set_yticklabels(merged["parameter"])
+    ax.set_yticks(range(len(y_order)))
+    ax.set_yticklabels(y_order)
     ax.set_xlabel("Importance Rank (1 = most important)")
     ax.set_ylabel("Parameter")
     ax.set_title("Cross-Dataset Parameter Importance Rank Comparison")
     ax.grid(axis="x", linestyle="--", alpha=0.35)
     ax.legend(loc="lower right")
-    if bool(tie_mask.any()):
-        ax.text(
-            0.01,
-            0.01,
-            "Ties are shown with a small horizontal offset.",
-            transform=ax.transAxes,
-            fontsize=9,
-            color="#555555",
-            ha="left",
-            va="bottom",
-        )
+    ax.text(
+        0.01,
+        0.01,
+        "Dataset points are slightly shifted horizontally for readability.",
+        transform=ax.transAxes,
+        fontsize=9,
+        color="#555555",
+        ha="left",
+        va="bottom",
+    )
     fig.tight_layout()
     save_fig(fig, out_fig_base)
 
@@ -289,19 +315,16 @@ def main() -> None:
     ssim_top = top_parameters(ssim_param_path, n=10)
     mse_top = top_parameters(mse_param_path, n=10)
 
-    # Build the requested Day 3 figure for best_mse
     build_mse_importance_plot(
         mse_param_path,
         out_fig_dir / "plot4_top10_feature_importance_best_mse",
     )
 
-    # Copy Day 2 figures from SSIM run if available.
     ssim_fig_dir = ssim_dir / "figures"
     if ssim_fig_dir.exists():
         for p in ssim_fig_dir.glob("*"):
             copy_if_exists(p, out_fig_dir / p.name)
 
-    # Required package core files + explicit target variants.
     copy_if_exists(mse_summary_path, out_dir / "summary.json")
     copy_if_exists(mse_param_path, out_dir / "parameter_importance.csv")
     copy_if_exists(mse_agg_path, out_dir / "aggregated_attack_results.csv")
@@ -313,26 +336,52 @@ def main() -> None:
     copy_if_exists(mse_param_path, out_dir / "parameter_importance_best_mse.csv")
     copy_if_exists(mse_agg_path, out_dir / "aggregated_attack_results_best_mse.csv")
 
+    extra_dirs: list[Path] = []
+    extra_labels: list[str] = []
+
+    if args.extra_ssim_dirs:
+        parsed_dirs = [Path(p) for p in args.extra_ssim_dirs]
+        extra_dirs.extend(parsed_dirs)
+        if args.extra_labels:
+            if len(args.extra_labels) != len(parsed_dirs):
+                raise ValueError("--extra-labels must match --extra-ssim-dirs length.")
+            extra_labels.extend(args.extra_labels)
+        else:
+            extra_labels.extend([p.name for p in parsed_dirs])
+
     if args.extra_ssim_dir:
-        extra_ssim_dir = Path(args.extra_ssim_dir)
-        extra_summary_path = extra_ssim_dir / "summary.json"
-        extra_param_path = extra_ssim_dir / "parameter_importance.csv"
-        extra_agg_path = extra_ssim_dir / "aggregated_attack_results.csv"
+        extra_dirs.append(Path(args.extra_ssim_dir))
+        extra_labels.append(args.extra_label)
 
-        if not extra_summary_path.exists() or not extra_param_path.exists() or not extra_agg_path.exists():
-            raise FileNotFoundError(
-                "Missing summary.json / parameter_importance.csv / aggregated_attack_results.csv in --extra-ssim-dir."
-            )
+    if extra_dirs:
+        extra_param_csvs: list[Path] = []
+        for i, extra_dir in enumerate(extra_dirs):
+            extra_summary_path = extra_dir / "summary.json"
+            extra_param_path = extra_dir / "parameter_importance.csv"
+            extra_agg_path = extra_dir / "aggregated_attack_results.csv"
 
-        copy_if_exists(extra_summary_path, out_dir / "summary_extra_dataset.json")
-        copy_if_exists(extra_param_path, out_dir / "parameter_importance_extra_dataset.csv")
-        copy_if_exists(extra_agg_path, out_dir / "aggregated_attack_results_extra_dataset.csv")
+            if not extra_summary_path.exists() or not extra_param_path.exists() or not extra_agg_path.exists():
+                raise FileNotFoundError(
+                    f"Missing summary.json / parameter_importance.csv / aggregated_attack_results.csv in: {extra_dir}"
+                )
+
+            slug = _slugify(extra_labels[i]) or f"extra_dataset_{i+1}"
+            copy_if_exists(extra_summary_path, out_dir / f"summary_extra_dataset_{slug}.json")
+            copy_if_exists(extra_param_path, out_dir / f"parameter_importance_extra_dataset_{slug}.csv")
+            copy_if_exists(extra_agg_path, out_dir / f"aggregated_attack_results_extra_dataset_{slug}.csv")
+
+            if i == 0:
+                copy_if_exists(extra_summary_path, out_dir / "summary_extra_dataset.json")
+                copy_if_exists(extra_param_path, out_dir / "parameter_importance_extra_dataset.csv")
+                copy_if_exists(extra_agg_path, out_dir / "aggregated_attack_results_extra_dataset.csv")
+
+            extra_param_csvs.append(extra_param_path)
 
         build_cross_dataset_rank_plot(
             primary_param_csv=ssim_param_path,
-            extra_param_csv=extra_param_path,
             primary_label=args.primary_label,
-            extra_label=args.extra_label,
+            extra_param_csvs=extra_param_csvs,
+            extra_labels=extra_labels,
             out_fig_base=out_fig_dir / "plot5_cross_dataset_importance_rank_comparison",
         )
 

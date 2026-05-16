@@ -1,0 +1,45 @@
+Using device: mps
+Starting AIJack FedAvg + DP BloodMNIST | clients=5, rounds=20, local_epochs=1, batch_size=64, lr=0.01, split=iid, alpha=0.5, optimizer=SGD, dp_enabled=True, clip_norm=1.0, noise_multiplier=0.5, dp_noise_std=None, effective_noise_multiplier=0.5, actual_noise_std=0.5, delta=1e-05
+Traceback (most recent call last):
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/scripts/fedavg_bloodmnist_aijack_dp.py", line 984, in <module>
+    main()
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/scripts/fedavg_bloodmnist_aijack_dp.py", line 833, in main
+    fedavg_api.run()
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/.venv/lib/python3.11/site-packages/aijack/collaborative/fedavg/api.py", line 73, in run
+    self.local_train(i)
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/.venv/lib/python3.11/site-packages/aijack/collaborative/fedavg/api.py", line 59, in local_train
+    self.clients[client_idx].local_train(
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/.venv/lib/python3.11/site-packages/aijack/defense/dp/manager/client.py", line 26, in local_train
+    pred = self(X_batch)
+           ^^^^^^^^^^^^^
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/.venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/.venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/.venv/lib/python3.11/site-packages/aijack/collaborative/core/client.py", line 21, in forward
+    return self.model(x)
+           ^^^^^^^^^^^^^
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/.venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/.venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/scripts/fedavg_bloodmnist_aijack_dp.py", line 40, in forward
+    x = self.pool(F.relu(self.conv1(x)))
+                         ^^^^^^^^^^^^^
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/.venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/.venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/.venv/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 553, in forward
+    return self._conv_forward(input, self.weight, self.bias)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/flaviafuscaldi/Desktop/fl_thesis/.venv/lib/python3.11/site-packages/torch/nn/modules/conv.py", line 548, in _conv_forward
+    return F.conv2d(
+           ^^^^^^^^^
+RuntimeError: Mismatched Tensor types in NNPack convolutionOutput
