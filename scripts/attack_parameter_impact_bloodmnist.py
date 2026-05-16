@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run a controlled sweep of AIJack gradient inversion attacks over trained "
-            "BloodMNIST FedAvg experiments, then estimate exploratory parameter impact."
+            "FedAvg experiments, then estimate exploratory parameter impact."
         )
     )
 
@@ -102,6 +102,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Human-readable sweep name. If omitted, a timestamped name is used. "
             "Only folders from this sweep are aggregated."
+        ),
+    )
+    parser.add_argument(
+        "--attack-script",
+        type=str,
+        default="gradient_inversion_bloodmnist_aijack.py",
+        help=(
+            "Attack script to execute for each run. Relative paths are resolved "
+            "from the scripts directory."
         ),
     )
 
@@ -524,7 +533,10 @@ def main() -> None:
     if args.jobs < 1:
         raise ValueError("--jobs must be >= 1.")
 
-    script_path = Path(__file__).resolve().parent / "gradient_inversion_bloodmnist_aijack.py"
+    script_path = Path(args.attack_script)
+    if not script_path.is_absolute():
+        script_path = Path(__file__).resolve().parent / script_path
+    script_path = script_path.resolve()
     if not script_path.exists():
         raise FileNotFoundError(f"Attack script not found: {script_path}")
 

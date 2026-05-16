@@ -32,6 +32,24 @@ def parse_args() -> argparse.Namespace:
         default="results/attack_parameter_impact/screening_blood_v1_exploratory_results_delivery_package",
         help="Output package directory.",
     )
+    parser.add_argument(
+        "--extra-ssim-dir",
+        type=str,
+        default=None,
+        help="Optional SSIM analysis directory for an additional dataset sweep.",
+    )
+    parser.add_argument(
+        "--primary-label",
+        type=str,
+        default="BloodMNIST",
+        help="Label for primary SSIM sweep in cross-dataset plot.",
+    )
+    parser.add_argument(
+        "--extra-label",
+        type=str,
+        default="PathMNIST",
+        help="Label for extra SSIM sweep in cross-dataset plot.",
+    )
     return parser.parse_args()
 
 
@@ -62,6 +80,77 @@ def build_mse_importance_plot(parameter_importance_csv: Path, out_fig_base: Path
     ax.set_ylabel("Parameter")
     ax.set_title("Top-10 Parameter Importance (target = best_mse)")
     ax.grid(axis="x", linestyle="--", alpha=0.35)
+    fig.tight_layout()
+    save_fig(fig, out_fig_base)
+
+
+def build_cross_dataset_rank_plot(
+    primary_param_csv: Path,
+    extra_param_csv: Path,
+    primary_label: str,
+    extra_label: str,
+    out_fig_base: Path,
+) -> None:
+    primary_df = pd.read_csv(primary_param_csv).sort_values(
+        "importance_mean_mae_increase",
+        ascending=False,
+    )
+    extra_df = pd.read_csv(extra_param_csv).sort_values(
+        "importance_mean_mae_increase",
+        ascending=False,
+    )
+
+    primary_df = primary_df.reset_index(drop=True)
+    extra_df = extra_df.reset_index(drop=True)
+    primary_df["rank_primary"] = primary_df.index + 1
+    extra_df["rank_extra"] = extra_df.index + 1
+
+    merged = primary_df[["parameter", "rank_primary"]].merge(
+        extra_df[["parameter", "rank_extra"]],
+        on="parameter",
+        how="inner",
+    )
+
+    if merged.empty:
+        raise ValueError("No overlapping parameters between primary and extra sweeps.")
+
+    merged = merged.sort_values("rank_primary").head(12).iloc[::-1]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for _, row in merged.iterrows():
+        ax.plot(
+            [row["rank_primary"], row["rank_extra"]],
+            [row["parameter"], row["parameter"]],
+            color="#9aa0a6",
+            linewidth=1.2,
+            alpha=0.8,
+        )
+
+    ax.scatter(
+        merged["rank_primary"],
+        merged["parameter"],
+        color="#1f77b4",
+        s=52,
+        label=primary_label,
+        zorder=3,
+    )
+    ax.scatter(
+        merged["rank_extra"],
+        merged["parameter"],
+        color="#ff7f0e",
+        s=52,
+        label=extra_label,
+        zorder=3,
+    )
+
+    max_rank = int(max(merged["rank_primary"].max(), merged["rank_extra"].max()))
+    ax.set_xlim(0.5, max_rank + 0.5)
+    ax.invert_xaxis()
+    ax.set_xlabel("Importance Rank (1 = most important)")
+    ax.set_ylabel("Parameter")
+    ax.set_title("Cross-Dataset Parameter Importance Rank Comparison")
+    ax.grid(axis="x", linestyle="--", alpha=0.35)
+    ax.legend(loc="lower right")
     fig.tight_layout()
     save_fig(fig, out_fig_base)
 
@@ -197,6 +286,29 @@ def main() -> None:
     copy_if_exists(mse_summary_path, out_dir / "summary_best_mse.json")
     copy_if_exists(mse_param_path, out_dir / "parameter_importance_best_mse.csv")
     copy_if_exists(mse_agg_path, out_dir / "aggregated_attack_results_best_mse.csv")
+
+    if args.extra_ssim_dir:
+        extra_ssim_dir = Path(args.extra_ssim_dir)
+        extra_summary_path = extra_ssim_dir / "summary.json"
+        extra_param_path = extra_ssim_dir / "parameter_importance.csv"
+        extra_agg_path = extra_ssim_dir / "aggregated_attack_results.csv"
+
+        if not extra_summary_path.exists() or not extra_param_path.exists() or not extra_agg_path.exists():
+            raise FileNotFoundError(
+                "Missing summary.json / parameter_importance.csv / aggregated_attack_results.csv in --extra-ssim-dir."
+            )
+
+        copy_if_exists(extra_summary_path, out_dir / "summary_extra_dataset.json")
+        copy_if_exists(extra_param_path, out_dir / "parameter_importance_extra_dataset.csv")
+        copy_if_exists(extra_agg_path, out_dir / "aggregated_attack_results_extra_dataset.csv")
+
+        build_cross_dataset_rank_plot(
+            primary_param_csv=ssim_param_path,
+            extra_param_csv=extra_param_path,
+            primary_label=args.primary_label,
+            extra_label=args.extra_label,
+            out_fig_base=out_fig_dir / "plot5_cross_dataset_importance_rank_comparison",
+        )
 
     build_text_note(out_dir / "interpretation_note.txt", ssim_top, mse_top)
     build_one_page_pdf(
