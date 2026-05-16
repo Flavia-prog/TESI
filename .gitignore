@@ -8,3 +8,4 @@ notebooks/.ipynb_checkpoints/
 
 .DS_Store
 .env
+AGENTS.md
