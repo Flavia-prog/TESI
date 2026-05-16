@@ -114,43 +114,69 @@ def build_cross_dataset_rank_plot(
     if merged.empty:
         raise ValueError("No overlapping parameters between primary and extra sweeps.")
 
-    merged = merged.sort_values("rank_primary").head(12).iloc[::-1]
+    merged = merged.sort_values("rank_primary").head(12).iloc[::-1].reset_index(drop=True)
+    merged["y"] = merged.index.astype(float)
+
+    # Separate fully overlapping points so both datasets remain visible.
+    tie_mask = merged["rank_primary"] == merged["rank_extra"]
+    tie_offset = 0.09
+    merged["rank_primary_plot"] = merged["rank_primary"] - tie_mask.astype(float) * tie_offset
+    merged["rank_extra_plot"] = merged["rank_extra"] + tie_mask.astype(float) * tie_offset
 
     fig, ax = plt.subplots(figsize=(10, 6))
     for _, row in merged.iterrows():
         ax.plot(
             [row["rank_primary"], row["rank_extra"]],
-            [row["parameter"], row["parameter"]],
+            [row["y"], row["y"]],
             color="#9aa0a6",
             linewidth=1.2,
             alpha=0.8,
         )
 
     ax.scatter(
-        merged["rank_primary"],
-        merged["parameter"],
+        merged["rank_primary_plot"],
+        merged["y"],
         color="#1f77b4",
+        marker="o",
         s=52,
         label=primary_label,
+        edgecolors="white",
+        linewidths=0.8,
         zorder=3,
     )
     ax.scatter(
-        merged["rank_extra"],
-        merged["parameter"],
+        merged["rank_extra_plot"],
+        merged["y"],
         color="#ff7f0e",
+        marker="D",
         s=52,
         label=extra_label,
+        edgecolors="white",
+        linewidths=0.8,
         zorder=3,
     )
 
     max_rank = int(max(merged["rank_primary"].max(), merged["rank_extra"].max()))
     ax.set_xlim(0.5, max_rank + 0.5)
     ax.invert_xaxis()
+    ax.set_yticks(merged["y"])
+    ax.set_yticklabels(merged["parameter"])
     ax.set_xlabel("Importance Rank (1 = most important)")
     ax.set_ylabel("Parameter")
     ax.set_title("Cross-Dataset Parameter Importance Rank Comparison")
     ax.grid(axis="x", linestyle="--", alpha=0.35)
     ax.legend(loc="lower right")
+    if bool(tie_mask.any()):
+        ax.text(
+            0.01,
+            0.01,
+            "Ties are shown with a small horizontal offset.",
+            transform=ax.transAxes,
+            fontsize=9,
+            color="#555555",
+            ha="left",
+            va="bottom",
+        )
     fig.tight_layout()
     save_fig(fig, out_fig_base)
 
