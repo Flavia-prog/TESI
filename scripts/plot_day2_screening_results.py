@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sweep-dir",
         type=str,
-        default="results/attack_parameter_impact/screening_blood_v1",
+        default="results/current/analysis/attack_parameter_impact/bloodmnist/screening_blood_v1",
         help="Directory containing parameter_importance.csv and aggregated_attack_results.csv",
     )
     return parser.parse_args()

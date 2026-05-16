@@ -25,25 +25,25 @@ SPLIT_SPECS: dict[str, dict[str, Any]] = {
     "iid": {
         "split_type": "iid",
         "alpha": 0.5,
-        "base_no_dp_dir": Path("results/iid_baseline"),
+        "base_no_dp_dir": Path("results/current/training/bloodmnist/baselines/iid_baseline"),
         "experiment_prefix": "iid",
     },
     "noniid_alpha_1": {
         "split_type": "dirichlet",
         "alpha": 1.0,
-        "base_no_dp_dir": Path("results/noniid_alpha_1"),
+        "base_no_dp_dir": Path("results/current/training/bloodmnist/baselines/noniid_alpha_1"),
         "experiment_prefix": "noniid_alpha_1",
     },
     "noniid_alpha_05": {
         "split_type": "dirichlet",
         "alpha": 0.5,
-        "base_no_dp_dir": Path("results/noniid_alpha_05"),
+        "base_no_dp_dir": Path("results/current/training/bloodmnist/baselines/noniid_alpha_05"),
         "experiment_prefix": "noniid_alpha_05",
     },
     "noniid_alpha_01": {
         "split_type": "dirichlet",
         "alpha": 0.1,
-        "base_no_dp_dir": Path("results/noniid_alpha_01"),
+        "base_no_dp_dir": Path("results/current/training/bloodmnist/baselines/noniid_alpha_01"),
         "experiment_prefix": "noniid_alpha_01",
     },
 }
@@ -119,7 +119,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--output-dir",
-        default="results/full_dp_privacy_utility_matrix",
+        default="results/current/privacy_utility/full_dp_privacy_utility_matrix",
         help="Directory for final summary/report artifacts.",
     )
     return parser.parse_args()
@@ -432,7 +432,8 @@ def main() -> None:
         for sigma in args.sigmas:
             sigma = float(sigma)
             exp_name = f"{prefix}_dp_sigma_{sigma_tag(sigma)}"
-            config_path = Path("configs") / f"{exp_name}.yaml"
+            config_path = Path("configs/current/dp_sigma_matrix") / f"{exp_name}.yaml"
+            experiment_dir = Path("results/current/training/bloodmnist/dp_matrix") / exp_name
             config_data = build_dp_config(
                 experiment_name=exp_name,
                 split_type=split_type,
@@ -448,7 +449,7 @@ def main() -> None:
                     "split_label": split_label,
                     "sigma": sigma,
                     "experiment_name": exp_name,
-                    "experiment_dir": str((Path("results") / exp_name).resolve()),
+                    "experiment_dir": str(experiment_dir.resolve()),
                     "status": config_status,
                     "returncode": 0,
                     "command": "",
@@ -462,7 +463,7 @@ def main() -> None:
                 "sigma": sigma,
                 "dp_enabled": True,
                 "experiment_name": exp_name,
-                "experiment_dir": Path("results") / exp_name,
+                "experiment_dir": experiment_dir,
                 "is_baseline": False,
                 "config_path": config_path,
                 "config_status": config_status,

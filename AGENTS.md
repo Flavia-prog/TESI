@@ -72,7 +72,12 @@ Important scripts:
 - `scripts/gradient_inversion_medmnist_aijack.py`: generalized MedMNIST
   gradient inversion attack evaluation.
 - `scripts/attack_parameter_impact_bloodmnist.py`: attack sweep and exploratory
-  regression/feature-importance analysis.
+  regression/feature-importance analysis. Random-forest permutation importance
+  from this script is a screening statistic, not a causal estimate. Prefer the
+  script's `controlled_pairwise_effects.csv` matched contrasts for thesis claims
+  when enough matched contrasts are available. The script also saves
+  `parameter_importance.png` and `controlled_pairwise_effects.png` for professor
+  updates and thesis figure drafts.
 - `scripts/run_full_dp_privacy_utility_matrix.py`: orchestration for the DP
   privacy-utility matrix.
 - `scripts/plot_frontier.py`: headline privacy-utility frontier plots.
@@ -82,8 +87,16 @@ Important result/status references:
 - `EXPERIMENTS_RUN_SO_FAR.md`: compact table of completed training runs,
   attack sweeps, and DP matrix status.
 - `EXPERIMENT_LOG.md`: historical manual log of utility and attack experiments.
-- `results/`: experiment outputs, attack outputs, aggregated summaries, and
-  figures.
+- `results/current/`: current thesis-facing outputs. Training runs are under
+  `results/current/training/`, attack-parameter analyses are under
+  `results/current/analysis/attack_parameter_impact/`, and privacy-utility
+  matrix summaries are under `results/current/privacy_utility/`.
+- `results/_archive_low_value_20260516/`: older pilots, partial duplicates,
+  individual attack-output folders, run logs, generated cache/system files, and
+  other low-value generated artifacts. They were archived rather than deleted.
+- `configs/current/`: active baseline and sigma-based DP matrix configs.
+  Legacy fixed-noise configs were moved to
+  `configs/_archive_legacy_noise_20260516/`.
 
 Failed trainings and failed attacks are informative project state. Do not hide
 or silently discard them. When they affect an analysis, report them explicitly
@@ -155,6 +168,16 @@ readable metrics, normally `attack_metrics.json` or a clearly named equivalent.
 
 Aggregated analyses should save CSV/JSON summaries alongside plots so thesis
 figures can be regenerated or checked later.
+
+For attack-parameter impact analysis, report both:
+
+- predictive screening results, for example grouped permutation importance; and
+- controlled matched contrasts that compare one varied attack/design parameter
+  while holding the other selected sweep parameters fixed.
+
+Make the leakage direction explicit. For MSE, lower values indicate stronger
+reconstruction/leakage; for SSIM-like scores, higher values indicate stronger
+reconstruction/leakage.
 
 Before running large sweeps, prefer a dry run or capped screening design when
 available. Avoid launching broad experiments that do not fit the MacBook Air

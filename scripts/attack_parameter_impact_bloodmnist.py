@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import itertools
 import json
+import os
 import re
 import subprocess
 import traceback
@@ -11,6 +12,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+os.environ.setdefault("MPLCONFIGDIR", str((Path.cwd() / ".mplcache").resolve()))
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -18,7 +24,7 @@ import yaml
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from torchmetrics.functional.image import structural_similarity_index_measure
@@ -30,10 +36,10 @@ from gradient_inversion_bloodmnist_aijack import run_gradient_inversion_attack
 
 
 DEFAULT_EXPERIMENT_DIRS = [
-    "results/iid_baseline",
-    "results/noniid_alpha_1",
-    "results/noniid_alpha_05",
-    "results/noniid_alpha_01",
+    "results/current/training/bloodmnist/baselines/iid_baseline",
+    "results/current/training/bloodmnist/baselines/noniid_alpha_1",
+    "results/current/training/bloodmnist/baselines/noniid_alpha_05",
+    "results/current/training/bloodmnist/baselines/noniid_alpha_01",
 ]
 
 DESIGN_FEATURES = [
@@ -50,6 +56,7 @@ DESIGN_FEATURES = [
 ]
 
 BALANCED_SCREENING_DEFAULT_MAX_RUNS = 128
+BOOTSTRAP_REPEATS = 2000
 
 
 def parse_args() -> argparse.Namespace:
@@ -167,7 +174,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         type=str,
-        default="results/attack_parameter_impact",
+        default="results/current/analysis/attack_parameter_impact/bloodmnist",
         help="Directory where analysis outputs are stored.",
     )
     parser.add_argument(
@@ -779,7 +786,7 @@ def discover_run_dirs_by_sweep_name(
 def prepare_regression_data(
     df: pd.DataFrame,
     target_metric: str,
-) -> tuple[pd.DataFrame, pd.Series, list[str], list[str]]:
+) -> tuple[pd.DataFrame, pd.Series, pd.Series, list[str], list[str]]:
     # Feature-importance from regression can only evaluate parameters that vary in the
     # selected sweep. A constant column provides no split/permutation signal and must be dropped.
     feature_columns = [
@@ -817,6 +824,7 @@ def prepare_regression_data(
 
     X = filtered[feature_columns].copy()
     y = filtered[target_metric].astype(float)
+    groups = build_target_groups(filtered)
 
     for categorical_identifier in ["client_id", "sample_index", "train_seed"]:
         if categorical_identifier in X.columns:
@@ -836,7 +844,282 @@ def prepare_regression_data(
 
     X = X[varying_columns]
 
-    return X, y, varying_columns, dropped_constant_columns
+    return X, y, groups, varying_columns, dropped_constant_columns
+
+
+def build_target_groups(df: pd.DataFrame) -> pd.Series:
+    group_cols = ["experiment_dir", "client_id", "sample_index", "attack_batch_size"]
+    available_cols = [col for col in group_cols if col in df.columns]
+    if not available_cols:
+        return pd.Series(np.arange(len(df)), index=df.index, dtype=str)
+
+    return df[available_cols].astype(str).agg("|".join, axis=1)
+
+
+def bootstrap_ci(values: list[float], seed: int = 42) -> tuple[float | None, float | None]:
+    if len(values) < 2:
+        return None, None
+
+    rng = np.random.default_rng(seed)
+    arr = np.asarray(values, dtype=float)
+    means = [
+        float(np.mean(rng.choice(arr, size=len(arr), replace=True)))
+        for _ in range(BOOTSTRAP_REPEATS)
+    ]
+    return float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))
+
+
+def metric_leakage_direction(target_metric: str) -> int:
+    if target_metric == "best_mse":
+        return -1
+    return 1
+
+
+def save_controlled_pairwise_effects(
+    aggregated: pd.DataFrame,
+    analysis_dir: Path,
+    target_metric: str,
+) -> pd.DataFrame:
+    """
+    Estimate parameter effects using matched contrasts.
+
+    For each parameter, rows are paired only when all other design parameters are
+    identical. This is much more defensible than interpreting a single model
+    importance number as a causal effect, and it costs no extra attack runs.
+    """
+    if "attack_status" not in aggregated.columns or target_metric not in aggregated.columns:
+        return pd.DataFrame()
+
+    available_design_cols = [col for col in DESIGN_FEATURES if col in aggregated.columns]
+    df = aggregated[aggregated["attack_status"] == "ok"].copy()
+    df = df.dropna(subset=[target_metric])
+
+    rows = []
+    leakage_direction = metric_leakage_direction(target_metric)
+
+    for parameter in available_design_cols:
+        if df[parameter].nunique(dropna=False) < 2:
+            continue
+
+        nuisance_cols = [col for col in available_design_cols if col != parameter]
+        if not nuisance_cols:
+            continue
+
+        deltas_by_pair: dict[tuple[str, str], list[float]] = {}
+
+        for _, group in df.groupby(nuisance_cols, dropna=False):
+            level_values = (
+                group.groupby(parameter, dropna=False)[target_metric]
+                .mean()
+                .sort_index(key=lambda idx: idx.astype(str))
+            )
+
+            if len(level_values) < 2:
+                continue
+
+            levels = list(level_values.index)
+            for lower_idx, higher_idx in itertools.combinations(range(len(levels)), 2):
+                baseline_level = levels[lower_idx]
+                comparison_level = levels[higher_idx]
+                pair_key = (str(baseline_level), str(comparison_level))
+                delta = float(level_values.iloc[higher_idx] - level_values.iloc[lower_idx])
+                deltas_by_pair.setdefault(pair_key, []).append(delta)
+
+        for (baseline_level, comparison_level), deltas in deltas_by_pair.items():
+            mean_delta = float(np.mean(deltas))
+            ci_low, ci_high = bootstrap_ci(deltas)
+            leakage_ci_values = [
+                value * leakage_direction if value is not None else None
+                for value in [ci_low, ci_high]
+            ]
+            leakage_ci_values = [
+                value for value in leakage_ci_values if value is not None
+            ]
+            ci_low_leakage = min(leakage_ci_values) if leakage_ci_values else None
+            ci_high_leakage = max(leakage_ci_values) if leakage_ci_values else None
+            rows.append(
+                {
+                    "parameter": parameter,
+                    "baseline_level": baseline_level,
+                    "comparison_level": comparison_level,
+                    "target_metric": target_metric,
+                    "n_matched_contrasts": len(deltas),
+                    "mean_metric_delta": mean_delta,
+                    "ci95_low_metric_delta": ci_low,
+                    "ci95_high_metric_delta": ci_high,
+                    "mean_leakage_delta": leakage_direction * mean_delta,
+                    "ci95_low_leakage_delta": ci_low_leakage,
+                    "ci95_high_leakage_delta": ci_high_leakage,
+                    "leakage_direction_note": (
+                        "Positive mean_leakage_delta means stronger reconstruction. "
+                        "For best_mse this is -metric_delta; for best_ssim this is metric_delta."
+                    ),
+                }
+            )
+
+    effects = pd.DataFrame(rows)
+    if not effects.empty:
+        effects = effects.sort_values(
+            ["parameter", "baseline_level", "comparison_level"],
+            kind="stable",
+        )
+    effects.to_csv(analysis_dir / "controlled_pairwise_effects.csv", index=False)
+    return effects
+
+
+def compact_level_label(value: Any, max_chars: int = 36) -> str:
+    text = str(value)
+    if "/" in text:
+        text = Path(text).name
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3]}..."
+
+
+def readable_contrast_label(row: pd.Series) -> str:
+    baseline = compact_level_label(row["baseline_level"])
+    comparison = compact_level_label(row["comparison_level"])
+    return f"{row['parameter']}: {baseline} -> {comparison}"
+
+
+def save_parameter_importance_plot(
+    importance_df: pd.DataFrame,
+    analysis_dir: Path,
+    top_n: int = 12,
+) -> Path | None:
+    if importance_df.empty:
+        return None
+
+    plot_df = importance_df.head(top_n).iloc[::-1].copy()
+    fig_height = max(4.0, 0.45 * len(plot_df) + 1.5)
+
+    fig, ax = plt.subplots(figsize=(9, fig_height))
+    ax.barh(
+        plot_df["parameter"],
+        plot_df["importance_mean_mae_increase"],
+        xerr=plot_df["importance_std_mae_increase"],
+        color="#4C78A8",
+        ecolor="#2F3A45",
+        capsize=3,
+    )
+    ax.axvline(0.0, color="#333333", linewidth=0.8)
+    ax.set_title("Predictive Parameter Importance")
+    ax.set_xlabel("Permutation importance: MAE increase")
+    ax.set_ylabel("")
+    ax.grid(axis="x", alpha=0.25)
+    fig.subplots_adjust(left=0.24, right=0.97, top=0.88, bottom=0.14)
+
+    path = analysis_dir / "parameter_importance.png"
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
+
+
+def save_controlled_effects_plot(
+    effects_df: pd.DataFrame,
+    analysis_dir: Path,
+    top_n: int = 16,
+) -> Path | None:
+    required_cols = {
+        "mean_leakage_delta",
+        "ci95_low_leakage_delta",
+        "ci95_high_leakage_delta",
+        "n_matched_contrasts",
+    }
+    if effects_df.empty or not required_cols.issubset(effects_df.columns):
+        return None
+
+    plot_df = effects_df.copy()
+    plot_df = plot_df.dropna(
+        subset=["mean_leakage_delta", "ci95_low_leakage_delta", "ci95_high_leakage_delta"]
+    )
+    if plot_df.empty:
+        return None
+
+    plot_df["abs_effect"] = plot_df["mean_leakage_delta"].abs()
+    plot_df = plot_df.sort_values("abs_effect", ascending=False).head(top_n)
+    plot_df = plot_df.iloc[::-1].copy()
+    plot_df["label"] = plot_df.apply(readable_contrast_label, axis=1)
+
+    y_positions = np.arange(len(plot_df))
+    x_values = plot_df["mean_leakage_delta"].to_numpy(dtype=float)
+    ci_low_leakage = plot_df["ci95_low_leakage_delta"].to_numpy(dtype=float)
+    ci_high_leakage = plot_df["ci95_high_leakage_delta"].to_numpy(dtype=float)
+    left_errors = x_values - ci_low_leakage
+    right_errors = ci_high_leakage - x_values
+
+    fig_height = max(5.0, 0.5 * len(plot_df) + 1.8)
+    fig, ax = plt.subplots(figsize=(10, fig_height))
+    colors = np.where(x_values >= 0, "#2F855A", "#C05621")
+    ax.barh(y_positions, x_values, color=colors, alpha=0.85)
+    ax.errorbar(
+        x_values,
+        y_positions,
+        xerr=np.vstack([left_errors, right_errors]),
+        fmt="none",
+        ecolor="#333333",
+        capsize=3,
+        linewidth=1,
+    )
+    ax.axvline(0.0, color="#333333", linewidth=0.8)
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(plot_df["label"])
+    ax.set_title("Controlled Matched Contrasts")
+    ax.set_xlabel("Mean leakage delta; positive means stronger reconstruction")
+    ax.set_ylabel("")
+    ax.grid(axis="x", alpha=0.25)
+
+    for y_pos, (_, row) in zip(y_positions, plot_df.iterrows(), strict=False):
+        ax.text(
+            0.01,
+            y_pos,
+            f"n={int(row['n_matched_contrasts'])}",
+            transform=ax.get_yaxis_transform(),
+            va="center",
+            ha="left",
+            fontsize=8,
+            color="#222222",
+        )
+
+    fig.subplots_adjust(left=0.36, right=0.97, top=0.9, bottom=0.12)
+
+    path = analysis_dir / "controlled_pairwise_effects.png"
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
+
+
+def split_train_test_with_groups(
+    X: pd.DataFrame,
+    y: pd.Series,
+    groups: pd.Series,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, str]:
+    if len(X) < 2:
+        raise ValueError("At least 2 regression rows are required.")
+
+    n_unique_groups = groups.nunique(dropna=False)
+    if n_unique_groups >= 2 and len(X) >= 5:
+        splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+        train_idx, test_idx = next(splitter.split(X, y, groups=groups))
+        return (
+            X.iloc[train_idx],
+            X.iloc[test_idx],
+            y.iloc[train_idx],
+            y.iloc[test_idx],
+            "group_shuffle_by_experiment_client_sample_batch",
+        )
+
+    test_size_count = max(1, int(round(0.2 * len(X))))
+    if test_size_count >= len(X):
+        test_size_count = 1
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=test_size_count,
+        random_state=42,
+    )
+    return X_train, X_test, y_train, y_test, "random_row_split_fallback"
 
 
 def grouped_permutation_importance(
@@ -1094,10 +1377,15 @@ def main() -> None:
         run_df.to_csv(run_manifest_path, index=False)
 
     save_group_summaries(aggregated, analysis_dir)
+    controlled_effects = save_controlled_pairwise_effects(
+        aggregated=aggregated,
+        analysis_dir=analysis_dir,
+        target_metric=args.target_metric,
+    )
 
     regression_warning = None
 
-    X, y, varying_columns, dropped_constant_columns = prepare_regression_data(
+    X, y, groups, varying_columns, dropped_constant_columns = prepare_regression_data(
         aggregated,
         target_metric=args.target_metric,
     )
@@ -1133,19 +1421,10 @@ def main() -> None:
         ]
     )
 
-    n_rows = len(X)
-    if n_rows < 2:
-        raise ValueError("At least 2 regression rows are required.")
-
-    test_size_count = max(1, int(round(0.2 * n_rows)))
-    if test_size_count >= n_rows:
-        test_size_count = 1
-
-    X_train, X_test, y_train, y_test = train_test_split(
+    X_train, X_test, y_train, y_test, validation_split = split_train_test_with_groups(
         X,
         y,
-        test_size=test_size_count,
-        random_state=42,
+        groups,
     )
 
     pipeline.fit(X_train, y_train)
@@ -1164,6 +1443,14 @@ def main() -> None:
 
     importance_path = analysis_dir / "parameter_importance.csv"
     importance_df.to_csv(importance_path, index=False)
+    importance_plot_path = save_parameter_importance_plot(
+        importance_df=importance_df,
+        analysis_dir=analysis_dir,
+    )
+    controlled_effects_plot_path = save_controlled_effects_plot(
+        effects_df=controlled_effects,
+        analysis_dir=analysis_dir,
+    )
 
     top_rows = importance_df.head(10)
 
@@ -1179,21 +1466,40 @@ def main() -> None:
         "model_arch_override": args.model_arch,
         "n_total_rows": int(len(aggregated)),
         "n_regression_rows": int(len(X)),
+        "validation_split": validation_split,
         "n_features_used": int(len(varying_columns)),
         "features_used": varying_columns,
         "dropped_constant_features": dropped_constant_columns,
         "test_r2": test_r2,
         "test_mae": test_mae,
         "regression_warning": regression_warning,
+        "controlled_pairwise_effects_path": str((analysis_dir / "controlled_pairwise_effects.csv").resolve()),
+        "controlled_pairwise_effects_plot_path": (
+            str(controlled_effects_plot_path.resolve())
+            if controlled_effects_plot_path is not None
+            else None
+        ),
+        "n_controlled_pairwise_effect_rows": int(len(controlled_effects)),
+        "parameter_importance_plot_path": (
+            str(importance_plot_path.resolve())
+            if importance_plot_path is not None
+            else None
+        ),
         "top_parameters": top_rows.to_dict(orient="records"),
         "permutation_importance_scope_note": (
-            "Permutation importance is only defined for parameters that varied in the selected sweep."
+            "Permutation importance is only defined for parameters that varied in the selected sweep. "
+            "It is a predictive screening statistic, not a causal estimate."
+        ),
+        "controlled_effects_scope_note": (
+            "controlled_pairwise_effects.csv reports matched contrasts where all other design "
+            "parameters are held fixed. Prefer these effect sizes for thesis claims when enough "
+            "matched contrasts are available."
         ),
         "important_note": (
             # This remains screening-oriented: observational sweeps can rank sensitivity,
             # but they do not establish causal effects without controlled causal design.
-            "This analysis is exploratory and should be used for parameter screening, "
-            "not causal proof."
+            "This analysis is exploratory. Treat random-forest importance as screening; "
+            "use controlled matched contrasts and confirmation runs for claims."
         ),
     }
 
@@ -1222,8 +1528,14 @@ def main() -> None:
     if design_report_path.exists():
         print(f"Design report: {design_report_path.resolve()}")
 
+    print(f"Controlled pairwise effects: {(analysis_dir / 'controlled_pairwise_effects.csv').resolve()}")
     print(f"Parameter importance: {importance_path.resolve()}")
+    if controlled_effects_plot_path is not None:
+        print(f"Controlled effects plot: {controlled_effects_plot_path.resolve()}")
+    if importance_plot_path is not None:
+        print(f"Parameter importance plot: {importance_plot_path.resolve()}")
     print(f"Summary: {summary_path.resolve()}")
+    print(f"Validation split: {validation_split}")
 
     print("\nTop parameters by grouped permutation importance:")
     for _, row in top_rows.iterrows():

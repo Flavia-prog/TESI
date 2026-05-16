@@ -8,7 +8,7 @@ Produces the headline privacy-utility frontier plots for the thesis
 Inputs
 ------
 Reads the aggregated summary CSV written by run_full_dp_privacy_utility_matrix.py:
-    results/full_dp_privacy_utility_matrix/full_dp_privacy_utility_matrix_summary.csv
+    results/current/privacy_utility/full_dp_privacy_utility_matrix/full_dp_privacy_utility_matrix_summary.csv
 
 Expected columns (subset; all are produced by the orchestrator):
     split_label, split_type, alpha, sigma, dp_enabled, epsilon,
@@ -30,8 +30,8 @@ so the reader can see how the frontier shifts with non-IID severity.
 Run
 ---
     python plot_frontier.py \
-        --summary-csv results/full_dp_privacy_utility_matrix/full_dp_privacy_utility_matrix_summary.csv \
-        --output-dir  results/full_dp_privacy_utility_matrix/figures
+        --summary-csv results/current/privacy_utility/full_dp_privacy_utility_matrix/full_dp_privacy_utility_matrix_summary.csv \
+        --output-dir  results/current/privacy_utility/full_dp_privacy_utility_matrix/figures
 """
 
 from __future__ import annotations
@@ -73,13 +73,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--summary-csv",
         type=str,
-        default="results/full_dp_privacy_utility_matrix/full_dp_privacy_utility_matrix_summary.csv",
+        default="results/current/privacy_utility/full_dp_privacy_utility_matrix/full_dp_privacy_utility_matrix_summary.csv",
         help="Path to the aggregated summary CSV.",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="results/full_dp_privacy_utility_matrix/figures",
+        default="results/current/privacy_utility/full_dp_privacy_utility_matrix/figures",
         help="Directory to write figures and Pareto table.",
     )
     parser.add_argument(

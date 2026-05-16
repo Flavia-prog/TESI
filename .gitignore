@@ -1,9 +1,11 @@
 .venv/
 __pycache__/
 *.pyc
+.mplcache/
 
 data/
 results/
+logs/
 notebooks/.ipynb_checkpoints/
 
 .DS_Store

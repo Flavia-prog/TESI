@@ -17,19 +17,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ssim-dir",
         type=str,
-        default="results/attack_parameter_impact/screening_blood_v1",
+        default="results/current/analysis/attack_parameter_impact/bloodmnist/screening_blood_v1",
         help="Directory of the best_ssim analysis results.",
     )
     parser.add_argument(
         "--mse-dir",
         type=str,
-        default="results/attack_parameter_impact_mse/screening_blood_v1",
+        default="results/_archive_low_value_20260516/result_sets/attack_parameter_impact_mse/screening_blood_v1",
         help="Directory of the best_mse analysis results.",
     )
     parser.add_argument(
         "--out-dir",
         type=str,
-        default="results/attack_parameter_impact/screening_blood_v1_exploratory_results_delivery_package",
+        default="results/current/analysis/attack_parameter_impact/bloodmnist/screening_blood_v1_exploratory_results_delivery_package",
         help="Output package directory.",
     )
     parser.add_argument(
