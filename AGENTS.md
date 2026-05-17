@@ -108,6 +108,15 @@ Important scripts:
   updates and thesis figure drafts.
 - `scripts/run_full_dp_privacy_utility_matrix.py`: orchestration for the DP
   privacy-utility matrix.
+- `scripts/run_bloodmnist_fixed_attacker_eval.py`: current BloodMNIST
+  fixed-attacker privacy-utility evaluator. It runs the calibrated attacker
+  across saved baseline and DP-matrix models, retains failed/no-MSE cells, and
+  writes `attack_cell_summary.csv`, `model_privacy_utility_table.csv`, and
+  `analysis_report.md`.
+- `scripts/run_bloodmnist_block_a_frontier.py`: Block A orchestrator for the
+  BloodMNIST sigma frontier. It validates the fixed-attacker protocol, runs the
+  fixed evaluator across all existing no-DP and sigma-matrix BloodMNIST models,
+  then writes Block-A-specific tables, plots, and report artifacts.
 - `scripts/plot_frontier.py`: headline privacy-utility frontier plots.
 
 Archived scripts:
@@ -125,6 +134,11 @@ Important result/status references:
 
 - `EXPERIMENTS_RUN_SO_FAR.md`: compact table of completed training runs,
   attack sweeps, and DP matrix status.
+- `BLOODMNIST_FRONTIER_EXPERIMENT_MATRIX.md`: current detailed table of
+  planned BloodMNIST federated privacy-utility frontier experiments. It fixes
+  the calibrated attacker and varies FL-side parameters including sigma,
+  clipping norm, local epochs, number of clients, training batch size, split
+  heterogeneity, seeds, and validation datasets.
 - `EXPERIMENT_LOG.md`: historical manual log of utility and attack experiments.
 - `results/current/`: current thesis-facing outputs. Training runs are under
   `results/current/training/`, attack-parameter analyses are under
@@ -132,10 +146,28 @@ Important result/status references:
   exploratory reconstruction-parameter analysis is under
   `results/current/analysis/exploratory_reconstruction_parameter_analysis/`,
   and privacy-utility matrix summaries are under `results/current/privacy_utility/`.
+- `results/current/privacy_utility/bloodmnist_block_a_frontier_v1/`: completed
+  2026-05-17 BloodMNIST Block A sigma-frontier fixed-attacker evaluation across
+  24 models and 216 retained attack cells. Key outputs are
+  `block_a_report.md`, `block_a_model_privacy_utility_table.csv`,
+  `attack_cell_summary.csv`, and the `figures/` privacy-utility plots,
+  including macro-F1 vs median MSE, macro-F1 vs sigma, median MSE vs sigma,
+  and attack success rate vs sigma. The macro-F1 vs median MSE plot is now a
+  two-panel figure: measured MSE frontier on the left and all trained models
+  with no-positive-MSE attack status on the right, to avoid hiding failed/no-MSE
+  attack cells.
+  The run retained 78 positive-MSE cells and 138 failed/no-MSE cells. Current
+  interpretation: no DP sigma setting preserved baseline macro-F1 within 10
+  percentage points for IID, alpha=0.5, or alpha=1 splits; alpha=0.1 at
+  sigma 0.25 and 0.5 stayed within 15 percentage points but not within 10.
+  Treat zero attack success at some DP settings cautiously, because many cells
+  failed with no MSE rather than producing successful high-MSE reconstructions.
 - `results/_archive_low_value_20260516/`: older pilots, partial duplicates,
   individual attack-output folders, run logs, generated cache/system files, and
   other low-value generated artifacts. They were archived rather than deleted.
 - `configs/current/`: active baseline and sigma-based DP matrix configs.
+  The fixed BloodMNIST attacker protocol selected from calibration is
+  `configs/current/attack_protocols/bloodmnist_fixed_attacker_v1.yaml`.
   Legacy fixed-noise configs were moved to
   `configs/_archive_legacy_noise_20260516/`.
 

@@ -1,0 +1,30 @@
+protocol_name: bloodmnist_fixed_attacker_v1
+dataset: bloodmnist
+framework: aijack
+purpose: fixed_attacker_for_privacy_utility_evaluation
+
+# Selected from results/current/analysis/attack_calibration_bloodmnist_v3_cpu.
+# Keep attacker-side parameters fixed during BloodMNIST privacy-utility comparisons.
+client_ids: [0, 1, 2]
+sample_indices: [0, 25, 50]
+attack_batch_sizes: [1]
+attack_iters: [300]
+num_trials: [3]
+attack_lrs: [0.05]
+distances: [cossim]
+
+device: cpu
+jobs: 1
+output_root: results/current/privacy_utility/bloodmnist_fixed_attacker_v1
+
+calibration_artifacts:
+  analysis_report: results/current/analysis/attack_calibration_bloodmnist_v3_cpu/analysis_report.md
+  group_level_summary: results/current/analysis/attack_calibration_bloodmnist_v3_cpu/group_level_summary.csv
+  matched_contrasts: results/current/analysis/attack_calibration_bloodmnist_v3_cpu/matched_contrasts.csv
+
+selection_notes:
+  - attack_batch_size=1 retained because batch sizes 2 and 4 produced no positive-MSE successes in calibration.
+  - distance=cossim retained because it had the strongest median leakage among tested distances.
+  - attack_lr=0.05 retained because higher tested learning rates reduced leakage in matched contrasts.
+  - attack_iters=300 and num_trials=3 retained because tested increases did not improve median leakage.
+  - clients 0,1,2 and samples 0,25,50 retained to keep the fixed protocol repeated across nuisance client/sample contexts.
