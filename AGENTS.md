@@ -20,14 +20,20 @@ federated learning, attacks, and defenses whenever feasible. Relevant AIJack
 capabilities include FedAvg, DLG/iDLG-style gradient inversion, GradInversion,
 DP-SGD, gradient compression, and Soteria-style defenses.
 
-The primary research question is attack-focused:
+The current thesis framing is privacy-utility focused:
 
-> How do attack conditions affect reconstruction success?
+> Which federated learning design and defense choices reduce reconstruction
+> leakage under strong gradient inversion attacks while preserving model utility?
 
-The broader thesis framing is the privacy-utility trade-off in federated
-learning: FL and defense mechanisms can reduce reconstruction quality, which is
-good for privacy, but they can also reduce model accuracy and macro-F1, which is
-bad for utility.
+The exploratory attack-condition work is now treated as attack calibration. Use
+it to define a strong or worst-case adversary, then evaluate FL configurations
+under that adversary. The authoritative current experiment plan is
+`PRIVACY_UTILITY_EXPERIMENT_PLAN.md`.
+
+The broader thesis framing remains the privacy-utility trade-off in federated
+learning: FL design and defense mechanisms can reduce reconstruction quality,
+which is good for privacy, but they can also reduce model accuracy and macro-F1,
+which is bad for utility.
 
 ## Datasets and Scope
 
@@ -77,8 +83,16 @@ Important scripts:
   executes the AIJack-based `gradient_inversion_medmnist_aijack.py` over a
   controlled grid of experiment directories, clients, samples, attack batch
   sizes, iteration counts, trials, attack learning rates, and AIJack distance
-  metrics, saving per-cell outputs and an `aijack_sweep_manifest.csv`. It can
-  also run in analysis-only mode on existing metric CSVs and/or
+  metrics, saving per-cell outputs and an `aijack_sweep_manifest.csv`. For new
+  attack-condition evidence, prefer `--sweep-design matched-ofat` over the
+  default full-factorial design: it creates one-factor-at-a-time comparison
+  blocks with explicit `comparison_id`, `varied_parameter`, and
+  `comparison_level` metadata so each parameter can be compared while the other
+  attack settings are held fixed. Use `--ofat-anchor-clients` and
+  `--ofat-anchor-sample-indices` to repeat each comparison across nuisance
+  client/sample contexts for more robust matched contrasts. It can also run in
+  analysis-only mode on
+  existing metric CSVs and/or
   `attack_metrics.json` files. It retains failed/no-MSE rows in the normalized
   dataset, reports group summaries, held-out cross-validated ridge permutation
   screening, numeric Spearman screening, and matched within-setting contrasts.
@@ -152,13 +166,23 @@ and explain whether they are excluded, retried, or treated as failed cells.
 
 Prioritize work that helps answer:
 
-> How do attack conditions affect reconstruction success?
+> Which FL configurations offer the best privacy-utility trade-off under a
+> strong calibrated gradient inversion attack?
 
-Use exploratory regression and feature importance to decide which parameters
-deserve deeper experiments. Candidate factors include dataset, client split,
-Dirichlet alpha, client id, sample index, attack batch size, attack iterations,
-number of trials, attack learning rate, distance metric, defense type, DP sigma,
-and epsilon where available.
+Use a two-stage design:
+
+1. Attack calibration: use exploratory matched sweeps, regression, and feature
+   importance to choose strong attacker settings. Candidate attack-side factors
+   include client id, sample index, attack batch size, attack iterations, number
+   of trials, attack learning rate, and distance metric.
+2. Privacy-utility evaluation: train FL models with different design/defense
+   choices, then attack all of them with the calibrated strong adversary.
+   Candidate FL-side factors include dataset, client split, Dirichlet alpha,
+   number of clients, local epochs, training batch size, defense type, clipping
+   norm, DP sigma/noise multiplier, and epsilon where available.
+
+Do not mix the two roles. Attacker parameters calibrate the evaluation protocol;
+FL/design/defense parameters define the thesis privacy-utility comparisons.
 
 Measure reconstruction success quantitatively where possible:
 

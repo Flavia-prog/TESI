@@ -51,6 +51,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--sweep-design",
+        choices=["full-factorial", "matched-ofat"],
+        default="full-factorial",
+        help=(
+            "AIJack sweep design. full-factorial runs every combination. "
+            "matched-ofat creates one-factor-at-a-time comparison blocks where "
+            "only one attacker setting changes at a time. Default: full-factorial."
+        ),
+    )
+    parser.add_argument(
         "--analysis-only",
         action="store_true",
         help="Alias for the default behavior: do not execute new AIJack attacks.",
@@ -113,6 +123,22 @@ def parse_args() -> argparse.Namespace:
         "--distances",
         default="l2,cossim",
         help="Comma-separated AIJack distance names. Default: l2,cossim",
+    )
+    parser.add_argument(
+        "--ofat-anchor-clients",
+        default=None,
+        help=(
+            "Comma-separated client ids used as repeated nuisance anchors for "
+            "matched-ofat blocks. Default: first --clients value."
+        ),
+    )
+    parser.add_argument(
+        "--ofat-anchor-sample-indices",
+        default=None,
+        help=(
+            "Comma-separated sample indices used as repeated nuisance anchors "
+            "for matched-ofat blocks. Default: first --sample-indices value."
+        ),
     )
     parser.add_argument(
         "--device",
@@ -221,7 +247,10 @@ def safe_float_token(value: float) -> str:
 
 
 def build_run_id(cell: dict[str, Any]) -> str:
-    return (
+    prefix = ""
+    if cell.get("varied_parameter"):
+        prefix = f"{cell['varied_parameter']}_{cell.get('comparison_level', 'level')}_"
+    return prefix + (
         f"client{cell['client_id']}_sample{cell['sample_index']}_"
         f"bs{cell['attack_batch_size']}_{cell['distance']}_"
         f"iters{cell['attack_iters']}_trials{cell['num_trials']}_"
@@ -293,12 +322,137 @@ def build_aijack_sweep_cells(args: argparse.Namespace, sweep_root: Path) -> list
     return cells
 
 
+def safe_level_token(value: Any) -> str:
+    text = str(value).strip().replace("/", "_").replace("\\", "_")
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", text).strip("_") or "missing"
+
+
+def build_matched_ofat_sweep_cells(args: argparse.Namespace, sweep_root: Path) -> list[dict[str, Any]]:
+    experiment_dirs = [Path(path) for path in args.experiment_dir] or default_experiment_dirs()
+    if not experiment_dirs:
+        raise SystemExit(
+            "No trained experiment directories found. Pass --experiment-dir pointing "
+            "to a directory with config.yaml and final_model.pt."
+        )
+
+    dataset_overrides = resolve_dataset_overrides(experiment_dirs, args.dataset)
+    experiments = list(zip(experiment_dirs, dataset_overrides))
+
+    clients = parse_int_list(args.clients)
+    sample_indices = parse_int_list(args.sample_indices)
+    batch_sizes = parse_int_list(args.attack_batch_sizes)
+    attack_iters = parse_int_list(args.attack_iters_grid)
+    num_trials = parse_int_list(args.num_trials_grid)
+    attack_lrs = parse_float_list(args.attack_lrs)
+    distances = parse_str_list(args.distances)
+    anchor_clients = (
+        parse_int_list(args.ofat_anchor_clients)
+        if args.ofat_anchor_clients is not None
+        else [clients[0]]
+    )
+    anchor_sample_indices = (
+        parse_int_list(args.ofat_anchor_sample_indices)
+        if args.ofat_anchor_sample_indices is not None
+        else [sample_indices[0]]
+    )
+
+    if not all([clients, sample_indices, batch_sizes, attack_iters, num_trials, attack_lrs, distances]):
+        raise SystemExit("All matched-ofat parameter grids must contain at least one value.")
+
+    base_experiment_dir, base_dataset = experiments[0]
+    base_cell = {
+        "experiment_dir": str(base_experiment_dir),
+        "experiment_name": base_experiment_dir.name,
+        "dataset_override": base_dataset,
+        "client_id": clients[0],
+        "sample_index": sample_indices[0],
+        "attack_batch_size": batch_sizes[0],
+        "attack_iters": attack_iters[0],
+        "num_trials": num_trials[0],
+        "attack_lr": attack_lrs[0],
+        "distance": distances[0],
+    }
+
+    dimensions: list[tuple[str, list[Any]]] = [
+        ("experiment_dir", experiments),
+        ("client_id", clients),
+        ("sample_index", sample_indices),
+        ("attack_batch_size", batch_sizes),
+        ("attack_iters", attack_iters),
+        ("num_trials", num_trials),
+        ("attack_lr", attack_lrs),
+        ("distance", distances),
+    ]
+
+    cells: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for varied_parameter, levels in dimensions:
+        if len(levels) < 2:
+            continue
+        comparison_id = f"matched_ofat_{varied_parameter}"
+        if varied_parameter == "client_id":
+            anchor_pairs = [(None, sample_index) for sample_index in anchor_sample_indices]
+        elif varied_parameter == "sample_index":
+            anchor_pairs = [(client_id, None) for client_id in anchor_clients]
+        else:
+            anchor_pairs = list(itertools.product(anchor_clients, anchor_sample_indices))
+
+        for anchor_client_id, anchor_sample_index in anchor_pairs:
+            for level in levels:
+                cell = dict(base_cell)
+                if anchor_client_id is not None:
+                    cell["client_id"] = anchor_client_id
+                if anchor_sample_index is not None:
+                    cell["sample_index"] = anchor_sample_index
+
+                if varied_parameter == "experiment_dir":
+                    experiment_dir, dataset = level
+                    cell["experiment_dir"] = str(experiment_dir)
+                    cell["experiment_name"] = experiment_dir.name
+                    cell["dataset_override"] = dataset
+                    comparison_level = experiment_dir.name
+                else:
+                    cell[varied_parameter] = level
+                    comparison_level = level
+
+                block_client = cell["client_id"] if varied_parameter != "client_id" else "varied"
+                block_sample = cell["sample_index"] if varied_parameter != "sample_index" else "varied"
+                comparison_block = f"client{block_client}_sample{block_sample}"
+
+                cell["sweep_design"] = "matched-ofat"
+                cell["comparison_id"] = comparison_id
+                cell["comparison_block"] = comparison_block
+                cell["varied_parameter"] = varied_parameter
+                cell["comparison_level"] = safe_level_token(comparison_level)
+                run_id = build_run_id(cell)
+                cell["run_id"] = run_id
+                cell["output_dir"] = str(
+                    sweep_root
+                    / comparison_id
+                    / comparison_block
+                    / cell["comparison_level"]
+                    / run_id
+                )
+
+                dedupe_key = (comparison_id, comparison_block, str(comparison_level), run_id)
+                if dedupe_key not in seen:
+                    seen.add(dedupe_key)
+                    cells.append(cell)
+
+    if args.max_runs is not None:
+        cells = cells[: args.max_runs]
+    return cells
+
+
 def run_aijack_sweep(args: argparse.Namespace, output_dir: Path) -> Path:
     sweep_name = args.sweep_name or datetime.now().strftime("aijack_sweep_%Y%m%d_%H%M%S")
     sweep_root = output_dir / "aijack_runs" / sweep_name
     sweep_root.mkdir(parents=True, exist_ok=True)
 
-    cells = build_aijack_sweep_cells(args, sweep_root)
+    if args.sweep_design == "matched-ofat":
+        cells = build_matched_ofat_sweep_cells(args, sweep_root)
+    else:
+        cells = build_aijack_sweep_cells(args, sweep_root)
     manifest_rows: list[dict[str, Any]] = []
     attack_script = Path(args.aijack_attack_script)
 
@@ -366,6 +520,27 @@ def run_aijack_sweep(args: argparse.Namespace, output_dir: Path) -> Path:
 
         if completed.returncode == 0 and metrics_path.exists():
             row["run_status"] = "ok"
+            try:
+                metrics_payload = read_json(metrics_path)
+                metrics_payload.update(
+                    {
+                        key: value
+                        for key, value in cell.items()
+                        if key
+                        in {
+                            "sweep_design",
+                            "comparison_id",
+                            "varied_parameter",
+                            "comparison_block",
+                            "comparison_level",
+                            "run_id",
+                        }
+                    }
+                )
+                with metrics_path.open("w", encoding="utf-8") as f:
+                    json.dump(metrics_payload, f, indent=2)
+            except Exception as error:
+                row["metadata_merge_error"] = f"{type(error).__name__}: {error}"
         else:
             row["run_status"] = "failed"
             failure_payload = {
@@ -386,10 +561,13 @@ def run_aijack_sweep(args: argparse.Namespace, output_dir: Path) -> Path:
 
     config = {
         "sweep_root": str(sweep_root),
+        "sweep_design": args.sweep_design,
         "aijack_attack_script": str(attack_script),
         "device": args.device,
         "dry_run": bool(args.dry_run),
         "overwrite": bool(args.overwrite),
+        "ofat_anchor_clients": args.ofat_anchor_clients,
+        "ofat_anchor_sample_indices": args.ofat_anchor_sample_indices,
         "leakage_metric": LEAKAGE_METRIC_DESCRIPTION,
     }
     with (sweep_root / "sweep_config.json").open("w", encoding="utf-8") as f:
